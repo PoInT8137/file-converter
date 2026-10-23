@@ -40,6 +40,17 @@ ICON_FILES = {
 
 _icons = {}
 _ui = {}
+_fonts = {}
+# старые объекты не удаляем: их __del__ обращается к Tcl и не должен сработать в фоновом потоке
+_keep = []
+
+
+def reset_cache():
+    """Картинки и шрифты привязаны к окну Tk, при новом главном окне кэш создаётся заново."""
+    _keep.extend(list(_icons.values()) + list(_ui.values()) + list(_fonts.values()))
+    _icons.clear()
+    _ui.clear()
+    _fonts.clear()
 
 
 def load_fonts():
@@ -62,12 +73,19 @@ def load_fonts():
         MONO = "IBM Plex Mono"
 
 
+def _font(family, size, weight):
+    key = (family, size, weight)
+    if key not in _fonts:
+        _fonts[key] = ctk.CTkFont(family=family, size=size, weight=weight)
+    return _fonts[key]
+
+
 def font(size=13, weight="normal"):
-    return ctk.CTkFont(family=SANS, size=size, weight=weight)
+    return _font(SANS, size, weight)
 
 
 def mono(size=12, weight="normal"):
-    return ctk.CTkFont(family=MONO, size=size, weight=weight)
+    return _font(MONO, size, weight)
 
 
 def _scaling():

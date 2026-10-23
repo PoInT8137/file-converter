@@ -202,6 +202,7 @@ def build():
     r.add(IMG_SRC, ["pdf"], "pymupdf", pdf.image_to_pdf)
     r.add(ffmpeg.AUDIO, ffmpeg.AUDIO, "ffmpeg", ffmpeg.convert)
     r.add(ffmpeg.VIDEO, ffmpeg.VIDEO + ["mp3", "m4a", "wav", "gif"], "ffmpeg", ffmpeg.convert)
+    r.add(["gif"], ["mp4", "webm"], "ffmpeg", ffmpeg.convert)
     r.add(pandoc.FORMATS, pandoc.FORMATS, "pandoc", pandoc.convert)
     return r
 

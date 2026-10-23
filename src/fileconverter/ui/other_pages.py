@@ -200,14 +200,14 @@ class AllConversions(Dialog):
     def __init__(self, app):
         super().__init__(app, "Все конвертации", width=640)
         self.app = app
-        self.query = ctk.StringVar()
-        e = entry(self.body, "Поиск: например, pdf или jpg в png", width=620, textvariable=self.query)
+        e = entry(self.body, "Поиск: например, pdf или jpg в png", width=620)
         e.pack(fill="x")
+        self.entry = e
         self.list = ctk.CTkScrollableFrame(self.body, fg_color=t.MAIN, width=620, height=440,
                                            scrollbar_button_color=t.BORDER)
         self.list.pack(fill="both", expand=True, pady=(12, 0))
         self.all = registry.all_conversions(app.engines)
-        self.query.trace_add("write", lambda *a: self.fill())
+        e.bind("<KeyRelease>", lambda ev: self.fill())
         self.fill()
         self.buttons("Закрыть", None)
         self.after(150, e.focus_set)
@@ -215,7 +215,7 @@ class AllConversions(Dialog):
     def fill(self):
         for w in self.list.winfo_children():
             w.destroy()
-        q = self.query.get().lower().replace(" в ", " ").split()
+        q = self.entry.get().lower().replace(" в ", " ").split()
         shown = 0
         for key, cname in CATEGORIES:
             items = [c for c in self.all if category(c.src) == key and self.match(c, q)]

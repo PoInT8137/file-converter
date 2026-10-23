@@ -1,4 +1,5 @@
 import ctypes
+import gc
 import os
 import queue
 import sys
@@ -65,6 +66,10 @@ class App(ctk.CTk, DND_BASE):
                 self.dnd_ok = True
             except Exception as e:
                 self.errors_dnd = str(e)
+        # сборка мусора только из главного потока, иначе объекты Tk могут удаляться из потоков задач
+        gc.disable()
+        self.gc_tick = 0
+        t.reset_cache()
         t.load_fonts()
         self.title("File Converter")
         self.geometry("1180x760")
@@ -446,6 +451,9 @@ class App(ctk.CTk, DND_BASE):
         self.ui_calls.put(fn)
 
     def poll(self):
+        self.gc_tick += 1
+        if self.gc_tick % 25 == 0:
+            gc.collect()
         try:
             while True:
                 self.ui_calls.get_nowait()()
@@ -590,6 +598,8 @@ class App(ctk.CTk, DND_BASE):
     def on_close(self):
         self.jobs.shutdown()
         self.destroy()
+        gc.collect()
+        gc.enable()
 
 
 def enable_dpi_awareness():
