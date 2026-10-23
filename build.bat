@@ -29,7 +29,14 @@ copy /y engines\*.exe "dist\FileConverter_onefile\engines\" >nul
 echo Проверка сборки...
 start /wait "" "dist\FileConverter\FileConverter.exe" --selftest
 if errorlevel 1 goto error
-echo Готово: dist\FileConverter\FileConverter.exe
+
+echo Сборка установщика...
+.venv\Scripts\python.exe -I installer\make_payload.py || goto error
+set FC_UNINSTALL=1
+.venv\Scripts\pyinstaller.exe --noconfirm --distpath build\payload --workpath build\uninstall_work installer\Setup.spec || goto error
+set FC_UNINSTALL=
+.venv\Scripts\pyinstaller.exe --noconfirm --distpath dist --workpath build\setup_work installer\Setup.spec || goto error
+echo Готово: dist\FileConverter\FileConverter.exe и dist\FileConverter_Setup_1.0.0.exe
 exit /b 0
 
 :error

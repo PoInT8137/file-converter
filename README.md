@@ -30,7 +30,9 @@ run.bat
 build.bat
 ```
 
-Результат: `dist\FileConverter\FileConverter.exe` (основной вариант) и `dist\FileConverter_onefile\FileConverter.exe` (один файл, папку `engines` нужно держать рядом). Проверка собранной программы: `FileConverter.exe --selftest`, код возврата 0 значит всё в порядке. Отчёт пишется в `%APPDATA%\FileConverter\selftest.log`.
+Результат: установщик `dist\FileConverter_Setup_1.0.0.exe`, программа без установки `dist\FileConverter\FileConverter.exe` и вариант одним файлом `dist\FileConverter_onefile\FileConverter.exe` (папку `engines` нужно держать рядом).
+
+Установщик ставит программу для текущего пользователя в `%LOCALAPPDATA%\Programs\File Converter`, права администратора не нужны. Он создаёт ярлык в меню Пуск, по желанию ярлык на рабочем столе и пункт в меню «Отправить». Удаление через Параметры Windows, раздел «Приложения». Удаляются только файлы, которые ставил установщик. Проверка собранной программы: `FileConverter.exe --selftest`, код возврата 0 значит всё в порядке. Отчёт пишется в `%APPDATA%\FileConverter\selftest.log`.
 
 ## Тесты
 
