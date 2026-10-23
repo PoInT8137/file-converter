@@ -1,0 +1,195 @@
+from pathlib import Path
+
+import customtkinter as ctk
+
+from ..osutils import human_size
+from ..registry import ext_of
+from . import theme as t
+from .widgets import DashedBox, caption, ghost_button, make_clickable, mono_label, outline_button, walk
+
+STATUS_TEXT = {"wait": "ЖДЁТ", "done": "ГОТОВО", "error": "ОШИБКА", "new": ""}
+STATUS_COLOR = {"wait": t.MUTED, "done": t.SUCCESS, "error": t.ERROR, "run": t.ACCENT, "new": t.MUTED}
+
+
+class QueueFile:
+    def __init__(self, path):
+        self.path = Path(path)
+        self.ext = ext_of(path)
+        try:
+            self.size = self.path.stat().st_size
+        except OSError:
+            self.size = 0
+        self.status = "new"
+        self.progress = 0.0
+        self.error = ""
+        self.outputs = []
+        self.jobs = []
+
+
+class QueueRow(ctk.CTkFrame):
+    def __init__(self, panel, item):
+        super().__init__(panel.list, fg_color=t.QUEUE, corner_radius=t.RADIUS, height=56)
+        self.panel = panel
+        self.item = item
+        self.selected = False
+        self.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(self, text="", image=t.get_icon(item.ext, 28), width=32).grid(
+            row=0, column=0, rowspan=2, padx=(10, 8), pady=8)
+        name = item.path.name
+        if len(name) > 30:
+            name = name[:18] + "..." + name[-9:]
+        self.name = ctk.CTkLabel(self, text=name, font=t.font(13), text_color=t.TEXT, anchor="w")
+        self.name.grid(row=0, column=1, sticky="ew", pady=(8, 0))
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.grid(row=1, column=1, sticky="ew", pady=(0, 8))
+        bottom.grid_columnconfigure(1, weight=1)
+        self.size = mono_label(bottom, human_size(item.size), 11)
+        self.size.grid(row=0, column=0, sticky="w")
+        self.bar = ctk.CTkProgressBar(bottom, height=3, corner_radius=1, fg_color=t.BORDER,
+                                      progress_color=t.ACCENT, width=60)
+        self.status = ctk.CTkLabel(bottom, text="", font=t.mono(11, "bold"), text_color=t.MUTED)
+        self.status.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        self.remove = ctk.CTkButton(self, text="", image=t.ui_icon("x", "muted", 14), width=28, height=28,
+                                    fg_color="transparent", hover_color=t.BORDER, corner_radius=t.RADIUS,
+                                    command=lambda: panel.remove(item))
+        self.remove.grid(row=0, column=2, rowspan=2, padx=(4, 8))
+        make_clickable(self, None, self.hover_on, self.hover_off)
+        skip = str(self.remove)
+        for w in walk(self):
+            if not str(w).startswith(skip):
+                try:
+                    w.bind("<Button-1>", self.click, add="+")
+                except (ValueError, NotImplementedError):
+                    pass
+        self.refresh()
+
+    def click(self, event=None):
+        ctrl = bool(event and event.state & 0x0004)
+        self.panel.click(self.item, ctrl)
+
+    def hover_on(self):
+        if not self.selected:
+            self.configure(fg_color=t.CARD)
+
+    def hover_off(self):
+        self.configure(fg_color=t.CARD_SEL if self.selected else t.QUEUE)
+
+    def set_selected(self, value):
+        self.selected = value
+        self.configure(fg_color=t.CARD_SEL if value else t.QUEUE, border_width=1 if value else 0,
+                       border_color=t.BORDER_BTN)
+
+    def refresh(self):
+        it = self.item
+        if it.status == "run":
+            self.bar.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+            self.bar.set(it.progress)
+            self.status.configure(text=f"{int(it.progress * 100)}%", text_color=t.ACCENT)
+        else:
+            self.bar.grid_forget()
+            self.status.configure(text=STATUS_TEXT.get(it.status, ""), text_color=STATUS_COLOR.get(it.status, t.MUTED))
+
+
+class QueuePanel(ctk.CTkFrame):
+    def __init__(self, app):
+        super().__init__(app.body, fg_color=t.QUEUE, corner_radius=0, width=290)
+        self.app = app
+        self.items = []
+        self.rows = {}
+        self.selected = []
+        self.grid_propagate(False)
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        head = ctk.CTkFrame(self, fg_color=t.QUEUE, height=t.H + 8)
+        head.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 0))
+        caption(head, "ОЧЕРЕДЬ").pack(side="left")
+        self.count = mono_label(head, "0", 11)
+        self.count.pack(side="left", padx=8)
+        ghost_button(head, "Очистить", self.clear, width=80, size=12).pack(side="right")
+
+        self.list = ctk.CTkScrollableFrame(self, fg_color=t.QUEUE, corner_radius=0,
+                                           scrollbar_button_color=t.BORDER, scrollbar_button_hover_color=t.BORDER_BTN)
+        self.list.grid(row=1, column=0, sticky="nsew", padx=(6, 2))
+        self.empty = mono_label(self.list, "Файлов пока нет", 12)
+        self.empty.pack(pady=30)
+
+        drop = DashedBox(self, bg=t.QUEUE, height=118)
+        drop.grid(row=2, column=0, sticky="ew", padx=12, pady=(8, 12))
+        self.drop = drop
+        ctk.CTkLabel(drop.inner, text="", image=t.ui_icon("upload", "muted", 20)).pack()
+        ctk.CTkLabel(drop.inner, text="Перетащите файлы сюда", font=t.font(12), text_color=t.MUTED).pack(pady=(2, 6))
+        outline_button(drop.inner, "Выбрать файлы", app.pick_files, width=160).pack()
+
+    def add(self, paths):
+        added = []
+        known = {str(i.path).lower() for i in self.items}
+        for p in paths:
+            p = Path(p)
+            if not p.is_file() or str(p).lower() in known:
+                existing = self.find(p)
+                if existing:
+                    added.append(existing)
+                continue
+            item = QueueFile(p)
+            self.items.append(item)
+            known.add(str(p).lower())
+            self.empty.pack_forget()
+            row = QueueRow(self, item)
+            row.pack(fill="x", pady=2, padx=(0, 4))
+            self.rows[id(item)] = row
+            added.append(item)
+        self.count.configure(text=str(len(self.items)))
+        return added
+
+    def find(self, path):
+        key = str(Path(path)).lower()
+        for i in self.items:
+            if str(i.path).lower() == key:
+                return i
+        return None
+
+    def remove(self, item):
+        if item not in self.items:
+            return
+        self.items.remove(item)
+        row = self.rows.pop(id(item), None)
+        if row:
+            row.destroy()
+        if item in self.selected:
+            self.selected.remove(item)
+            self.app.on_selection()
+        if not self.items:
+            self.empty.pack(pady=30)
+        self.count.configure(text=str(len(self.items)))
+
+    def clear(self):
+        for item in list(self.items):
+            if item.status != "run":
+                self.remove(item)
+
+    def click(self, item, ctrl=False):
+        if ctrl:
+            if item in self.selected:
+                self.selected.remove(item)
+            else:
+                self.selected.append(item)
+        else:
+            self.selected = [item]
+        self.update_selection()
+        self.app.on_selection()
+
+    def select(self, items):
+        self.selected = [i for i in items if i in self.items]
+        self.update_selection()
+
+    def update_selection(self):
+        for item in self.items:
+            row = self.rows.get(id(item))
+            if row:
+                row.set_selected(item in self.selected)
+
+    def refresh(self, item):
+        row = self.rows.get(id(item))
+        if row:
+            row.refresh()
