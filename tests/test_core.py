@@ -209,6 +209,7 @@ def test_csv_separator_and_encoding(tmp_path):
     assert libreoffice.detect_separator("Имя;Сумма\nИван;250,5\n") == ";"
     assert libreoffice.detect_separator("a,b,c\n1,2,3\n") == ","
     assert libreoffice.detect_separator("a\tb\n1\t2\n") == "\t"
+    assert libreoffice.detect_separator("Цена\n1.5\n2.5\n") == ","
     f = tmp_path / "ru.csv"
     f.write_bytes("Имя;Город".encode("cp1251"))
     assert libreoffice.read_text_any(f) == "Имя;Город"

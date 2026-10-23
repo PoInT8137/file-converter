@@ -132,6 +132,22 @@ class JobQueue:
         job.ctx = ctx
         set_current(ctx)
         try:
+            self._execute(job, ctx, namer)
+            if job.status == DONE:
+                # статистика, история и открытие результата не должны превращать готовую задачу в ошибку
+                try:
+                    self._after_success(job)
+                except Exception as e:
+                    self._log(job, f"Готово, но действие после конвертации не выполнено: {friendly_error(e)}")
+        finally:
+            set_current(None)
+            namer.release_all()
+            job.finished = time.time()
+            job.done_event.set()
+            self.events.put(("done", job))
+
+    def _execute(self, job, ctx, namer):
+        try:
             if job.cancel_requested:
                 raise Cancelled()
             job.status = RUN
@@ -154,7 +170,6 @@ class JobQueue:
                 raise ConvertError("Результат не получен")
             job.status = DONE
             job.progress = 1.0
-            self._after_success(job)
         except Cancelled:
             job.status = CANCEL
             job.error = "Отменено"
@@ -169,26 +184,25 @@ class JobQueue:
                 detail = traceback.format_exc(limit=3).strip().splitlines()[-1]
                 job.log.append(f"           {detail}")
             if self.history:
-                self.history.add(job.files[0] if job.files else "", "", ERROR, job.error)
-        finally:
-            set_current(None)
-            namer.release_all()
-            job.finished = time.time()
-            job.done_event.set()
-            self.events.put(("done", job))
-
+                try:
+                    self.history.add(job.files[0] if job.files else "", "", ERROR, job.error)
+                except Exception:
+                    pass
     @staticmethod
     def _remove_partial(namer):
         # имена занимались только под несуществующие пути, значит всё по ним создала эта задача
         for p in namer.reserved:
             p = Path(p)
-            try:
-                if p.is_dir():
-                    shutil.rmtree(p, ignore_errors=True)
-                elif p.exists():
-                    p.unlink()
-            except OSError:
-                pass
+            for _ in range(10):
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                    elif p.exists():
+                        p.unlink()
+                    break
+                except OSError:
+                    # файл может ещё держать только что остановленный процесс
+                    time.sleep(0.2)
 
     def _after_success(self, job):
         first = job.outputs[0]
@@ -214,7 +228,11 @@ class JobQueue:
             if src not in job.outputs and send_to_trash(src):
                 self._log(job, f"Исходный файл перемещён в корзину: {src.name}")
 
-    def shutdown(self):
+    def shutdown(self, wait=3.0):
+        """Отменяет задачи и ждёт потоки, чтобы они успели убрать незаконченные файлы."""
         self.cancel_all()
         for _ in self.threads:
             self.pending.put(None)
+        end = time.time() + wait
+        for th in self.threads:
+            th.join(max(0.0, end - time.time()))

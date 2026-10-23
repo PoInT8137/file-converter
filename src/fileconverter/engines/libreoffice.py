@@ -68,7 +68,8 @@ def detect_separator(text):
         score = min(counts) if len(set(counts)) == 1 else min(counts) - 1
         if score > best_score:
             best, best_score = sep, score
-    return best
+    # в файле из одной колонки разделителя нет вообще, тогда обычная запятая
+    return best if best_score > 0 else ","
 
 
 def build_command(soffice, src, dst_ext, outdir, profile=None, separator=","):

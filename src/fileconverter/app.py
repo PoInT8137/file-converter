@@ -59,6 +59,7 @@ class App(ctk.CTk, DND_BASE):
         super().__init__(fg_color=t.BG)
         self.selftest = selftest
         self.errors = []
+        self.error_shown = False
         self.dnd_ok = False
         if TkinterDnD is not None:
             try:
@@ -130,12 +131,18 @@ class App(ctk.CTk, DND_BASE):
                 f.write(time.strftime("%Y-%m-%d %H:%M:%S\n") + text + "\n")
         except OSError:
             pass
-        if not self.selftest:
-            try:
-                message(self, "Что-то пошло не так", f"Внутренняя ошибка: {val}\nПодробности в error.log в папке данных.",
-                        "error")
-            except Exception:
-                pass
+        # окно с ошибкой показываем один раз за сеанс и не изнутри poll, остальные ошибки только в error.log
+        if not self.selftest and not self.error_shown:
+            self.error_shown = True
+
+            def show():
+                try:
+                    message(self, "Что-то пошло не так",
+                            f"Внутренняя ошибка: {val}\nПодробности в error.log в папке данных.", "error")
+                except Exception:
+                    pass
+
+            self.after(50, show)
 
     def build_header(self):
         head = ctk.CTkFrame(self, fg_color=t.BAR, corner_radius=0, height=60)

@@ -37,6 +37,11 @@ def kill_tree(proc):
         proc.kill()
     except OSError:
         pass
+    # пока процесс не завершился, Windows держит его файлы открытыми и удалить их нельзя
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
 
 
 class Context:
