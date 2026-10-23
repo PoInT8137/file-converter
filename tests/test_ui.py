@@ -19,14 +19,35 @@ def wait_job(app, item, timeout=60):
     pump(app, 0.2)
 
 
-@pytest.fixture
-def app(tmp_path, monkeypatch):
-    monkeypatch.setenv("FILECONVERTER_DATA", str(tmp_path / "data"))
+@pytest.fixture(scope="module")
+def shared_app(tmp_path_factory):
+    # одно окно на все проверки, как в настоящей программе: несколько Tk подряд в одном процессе
+    # на Windows иногда не могут прочитать tk.tcl
+    import os
+    os.environ["FILECONVERTER_DATA"] = str(tmp_path_factory.mktemp("ui_data"))
     from fileconverter.app import App
     a = App(selftest=True)
     pump(a)
     yield a
     a.on_close()
+
+
+@pytest.fixture
+def app(shared_app):
+    from fileconverter.config import DEFAULTS
+    a = shared_app
+    for key, value in DEFAULTS.items():
+        a.settings.set(key, value)
+    a.stats.reset()
+    a.stats.recent = []
+    a.history.clear()
+    a.queue_panel.clear()
+    a.queue_panel.select([])
+    a.errors.clear()
+    a.show_section("convert")
+    a.pages["convert"].show_home()
+    pump(a, 0.1)
+    return a
 
 
 def test_sections_open(app):
@@ -99,6 +120,53 @@ def test_search_and_all_conversions(app):
     assert len(d.list.winfo_children()) >= 2
     pump(app, 0.05)
     d.destroy()
+
+
+def test_poll_survives_errors(app, data_dir, tmp_path):
+    app.settings.set("output_dir", str(tmp_path / "out"))
+
+    def boom():
+        raise RuntimeError("проверка")
+
+    app.call_soon(boom)
+    pump(app, 0.3)
+    items = app.add_files([data_dir / "картинка.png"])
+    app.start_conversion(items, "jpg")
+    wait_job(app, items[0])
+    assert items[0].status == "done"
+    assert len(app.errors) == 1
+    app.errors.clear()
+
+
+def test_ctrl_k_keeps_entry_text(app):
+    app.show_section("settings")
+    pump(app, 0.2)
+    e = app.pages["settings"].path_entries["tesseract_path"]
+    e.insert(0, "abcdef")
+    e._entry.icursor(3)
+    e._entry.focus_force()
+    pump(app, 0.2)
+    e._entry.event_generate("<Control-Key-k>", keycode=75)
+    pump(app, 0.2)
+    assert e.get() == "abcdef"
+    assert app.focus_get() == app.search._entry
+
+
+def test_settings_rescan_and_refresh(app):
+    app.show_section("settings")
+    pump(app, 0.2)
+    page = app.pages["settings"]
+    page.path_entries["libreoffice_path"].insert(0, r"D:\нет\soffice.exe")
+    page.rescan()
+    assert app.settings.get("libreoffice_path") == r"D:\нет\soffice.exe"
+    app.settings.set("libreoffice_path", "")
+    app.show_section("convert")
+    app.settings.set("open_after", True)
+    app.show_section("settings")
+    pump(app, 0.2)
+    from fileconverter.ui.widgets import walk
+    boxes = [w for w in walk(app.pages["settings"]) if isinstance(w, ctk.CTkCheckBox)]
+    assert boxes[0].get() == 1
 
 
 def test_unknown_file(app, tmp_path):

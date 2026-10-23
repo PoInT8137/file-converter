@@ -150,3 +150,36 @@ def test_jobs_queue(data_dir, tmp_path, engines):
     fut.result(timeout=60)
     assert job.status == ERROR and "не найден" in job.error
     q.shutdown()
+
+
+def test_cancel_jobs(data_dir, tmp_path, engines):
+    import subprocess
+    import time
+    from fileconverter.config import Settings
+    from fileconverter.jobs import CANCEL, JobQueue
+    from fileconverter.registry import registry
+
+    if not engines.available("ffmpeg"):
+        pytest.skip("нет FFmpeg")
+    long = tmp_path / "длинное.mp4"
+    subprocess.run([str(engines.path("ffmpeg")), "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc=duration=60:size=640x360:rate=25", "-c:v", "libx264", "-preset", "ultrafast", str(long)],
+                   check=True, creationflags=0x08000000)
+    out = tmp_path / "out"
+    settings = Settings(tmp_path / "s.json")
+    settings.set("output_dir", str(out))
+    q = JobQueue(engines, settings, workers=1)
+    running, _ = q.convert(long, registry.get("mp4", "webm", engines))
+    waiting, _ = q.convert(data_dir / "картинка.png", registry.get("png", "jpg", engines))
+    end = time.time() + 30
+    while running.status != "run" and time.time() < end:
+        time.sleep(0.05)
+    time.sleep(1.5)
+    q.cancel(waiting)
+    q.cancel(running)
+    running.result(timeout=30)
+    waiting.result(timeout=30)
+    assert running.status == CANCEL and waiting.status == CANCEL
+    # незаконченный WEBM удалён, JPG не создавался
+    assert not out.exists() or list(out.iterdir()) == []
+    q.shutdown()

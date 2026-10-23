@@ -50,6 +50,18 @@ def default_dir():
     return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Programs" / APP
 
 
+def registered_dir():
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY) as k:
+            return Path(winreg.QueryValueEx(k, "InstallLocation")[0])
+    except OSError:
+        return None
+
+
+def is_installed(folder):
+    return (Path(folder) / MANIFEST).exists() and (Path(folder) / EXE).exists()
+
+
 def special_folder(csidl):
     buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
     ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf)
@@ -132,6 +144,7 @@ class Wizard(ctk.CTk):
         self.events = queue.Queue()
         self.cancel_flag = threading.Event()
         self.busy = False
+        self.final = False
         self.target = default_dir()
         self.result = None
 
@@ -264,6 +277,8 @@ class Wizard(ctk.CTk):
         self.target = target
         self.page_progress("Копирование файлов...")
         self.busy = True
+        self.final = False
+        self.cancel_flag.clear()
         threading.Thread(target=self.install_worker, args=(target, self.var_desktop.get(), self.var_sendto.get()),
                          daemon=True).start()
 
@@ -276,13 +291,18 @@ class Wizard(ctk.CTk):
         self.bar.pack(fill="x")
         self.file_label = ctk.CTkLabel(self.body, text="", font=t.mono(11), text_color=t.MUTED, anchor="w")
         self.file_label.pack(anchor="w", fill="x", pady=(8, 0))
+        self.cancel_button = None
         if self.mode == "install":
-            self.buttons(None, ("Отмена", self.ask_cancel))
+            self.cancel_button = outline_button(self.footer, "Отмена", self.ask_cancel, size=13, width=104)
+            self.cancel_button.pack(side="right", padx=14, pady=14)
 
     def install_worker(self, target, desktop, sendto):
-        created = not target.exists()
+        # сначала распаковываем во временную папку рядом: отмена или ошибка не портят уже установленную программу
+        stage = target.parent / f".{target.name}.new"
+        made = [d for d in [target.parent, *target.parent.parents] if not d.exists()]
         try:
-            target.mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(stage, ignore_errors=True)
+            stage.mkdir(parents=True)
             with zipfile.ZipFile(payload_path()) as z:
                 infos = [i for i in z.infolist() if not i.is_dir()]
                 total = sum(i.file_size for i in infos) or 1
@@ -291,7 +311,7 @@ class Wizard(ctk.CTk):
                     if self.cancel_flag.is_set():
                         raise Cancelled()
                     self.events.put(("file", info.filename.replace("/", "\\")))
-                    dest = target / info.filename
+                    dest = stage / info.filename
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     with z.open(info) as src, open(dest, "wb") as out:
                         while True:
@@ -300,14 +320,33 @@ class Wizard(ctk.CTk):
                                 break
                             out.write(chunk)
                             done += len(chunk)
-                            self.events.put(("progress", done / total * 0.95))
+                            self.events.put(("progress", done / total * 0.9))
                             if self.cancel_flag.is_set():
                                 raise Cancelled()
             uninstaller = base_dir() / UNINSTALL_EXE
             if uninstaller.exists():
-                shutil.copy2(uninstaller, target / UNINSTALL_EXE)
+                shutil.copy2(uninstaller, stage / UNINSTALL_EXE)
             names = [i.filename.replace("/", "\\") for i in infos]
+
+            # дальше отменить нельзя: файлы переносятся на место за секунды
+            self.events.put(("final", None))
+            old_manifest = target / MANIFEST
+            old_names = old_manifest.read_text(encoding="utf-8").splitlines() if old_manifest.exists() else []
+            target.mkdir(parents=True, exist_ok=True)
+            for name in names + [UNINSTALL_EXE]:
+                src = stage / name
+                if src.exists():
+                    dest = target / name
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(src, dest)
+            for name in set(old_names) - set(names):
+                try:
+                    (target / name).unlink()
+                except OSError:
+                    pass
             (target / MANIFEST).write_text("\n".join(names), encoding="utf-8")
+            shutil.rmtree(stage, ignore_errors=True)
+
             self.events.put(("file", "Ярлыки"))
             links = shortcut_paths()
             for name in ("desktop", "sendto"):
@@ -318,17 +357,27 @@ class Wizard(ctk.CTk):
             self.events.put(("progress", 1.0))
             self.events.put(("done", None))
         except Cancelled:
-            if created:
-                shutil.rmtree(target, ignore_errors=True)
+            self.cleanup_stage(stage, made)
             self.events.put(("cancelled", None))
         except PermissionError:
+            self.cleanup_stage(stage, made)
             self.events.put(("error", "Нет прав на запись в эту папку. Выберите папку в профиле пользователя, "
                                       "например в AppData\\Local\\Programs."))
         except OSError as e:
+            self.cleanup_stage(stage, made)
             self.events.put(("error", f"Не удалось скопировать файлы: {e.strerror or e}"))
 
+    @staticmethod
+    def cleanup_stage(stage, made):
+        shutil.rmtree(stage, ignore_errors=True)
+        for d in made:
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
     def ask_cancel(self):
-        if self.busy:
+        if self.busy and self.mode == "install" and not self.final:
             self.cancel_flag.set()
             self.file_label.configure(text="Отмена...")
 
@@ -366,7 +415,13 @@ class Wizard(ctk.CTk):
         self.set_step(0)
         self.target = Path(sys.executable).parent if getattr(sys, "frozen", False) else default_dir()
         self.heading(f"Удаление {APP}")
-        self.text(f"Программа будет удалена из папки:")
+        if not is_installed(self.target):
+            # деинсталлятор лежит не в папке установленной программы: ничего не трогаем
+            self.text("В этой папке нет установленного File Converter. Удалите программу через "
+                      "Параметры Windows, раздел «Приложения».", t.ERROR)
+            self.buttons(("Закрыть", self.destroy))
+            return
+        self.text("Программа будет удалена из папки:")
         ctk.CTkLabel(self.body, text=str(self.target), font=t.mono(11), text_color=t.CAPTION, anchor="w",
                      wraplength=420, justify="left").pack(anchor="w", pady=(4, 0))
         self.var_data = ctk.BooleanVar(value=False)
@@ -385,15 +440,19 @@ class Wizard(ctk.CTk):
 
     def remove_worker(self, target, with_data):
         try:
-            for link in shortcut_paths().values():
+            if not is_installed(target):
+                raise OSError("в папке нет установленной программы")
+            # ярлыки и запись в реестре трогаем, только если они относятся к этой папке
+            if registered_dir() in (None, target):
+                for link in shortcut_paths().values():
+                    try:
+                        link.unlink()
+                    except OSError:
+                        pass
                 try:
-                    link.unlink()
+                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REG_KEY)
                 except OSError:
                     pass
-            try:
-                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REG_KEY)
-            except OSError:
-                pass
             if with_data:
                 shutil.rmtree(Path(os.environ.get("APPDATA", "")) / "FileConverter", ignore_errors=True)
             manifest = target / MANIFEST
@@ -442,7 +501,11 @@ class Wizard(ctk.CTk):
         try:
             while True:
                 kind, value = self.events.get_nowait()
-                if kind == "file":
+                if kind == "final":
+                    self.final = True
+                    if self.cancel_button is not None:
+                        self.cancel_button.configure(state="disabled")
+                elif kind == "file":
                     self.file_label.configure(text=value)
                 elif kind == "progress":
                     self.bar.set(value)
@@ -469,6 +532,7 @@ class Wizard(ctk.CTk):
 
     def on_close(self):
         if self.busy:
+            # во время удаления и последнего шага установки окно не закрывается, отмена там невозможна
             self.ask_cancel()
             return
         self.destroy()

@@ -52,6 +52,17 @@ class Namer:
     def __init__(self, output_dir="", template="{name}"):
         self.output_dir = output_dir
         self.template = template
+        # имена, занятые этой задачей; после неё освобождаются через release_all
+        self.reserved = []
+
+    def keep(self, path):
+        self.reserved.append(path)
+        return path
+
+    def release_all(self):
+        for p in self.reserved:
+            release(p)
+        self.reserved = []
 
     def folder_for(self, src):
         if self.output_dir:
@@ -71,19 +82,21 @@ class Namer:
         path = self.folder_for(src) / f"{stem}.{ext.lower()}"
         if path.resolve() == src.resolve():
             path = path.with_name(f"{stem} (1).{ext.lower()}")
-        return unique_path(path)
+        return self.keep(unique_path(path))
 
     def folder(self, src, tag=""):
         src = Path(src)
         stem = apply_template(self.template, src)
         if tag:
             stem = f"{stem}_{tag}"
-        return unique_path(self.folder_for(src) / stem, is_dir=True)
+        return self.keep(unique_path(self.folder_for(src) / stem, is_dir=True))
 
 
-def pages_folder(dst):
+def pages_folder(dst, namer=None):
     """Папка для многостраничного результата рядом с запланированным файлом."""
     dst = Path(dst)
     folder = unique_path(dst.with_suffix(""), is_dir=True)
+    if namer is not None:
+        namer.keep(folder)
     folder.mkdir(parents=True, exist_ok=True)
     return folder

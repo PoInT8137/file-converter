@@ -7,8 +7,8 @@ from ..registry import ext_of
 from . import theme as t
 from .widgets import DashedBox, caption, ghost_button, make_clickable, mono_label, outline_button, walk
 
-STATUS_TEXT = {"wait": "ЖДЁТ", "done": "ГОТОВО", "error": "ОШИБКА", "new": ""}
-STATUS_COLOR = {"wait": t.MUTED, "done": t.SUCCESS, "error": t.ERROR, "run": t.ACCENT, "new": t.MUTED}
+STATUS_TEXT = {"wait": "ЖДЁТ", "done": "ГОТОВО", "error": "ОШИБКА", "cancel": "ОТМЕНА", "new": ""}
+STATUS_COLOR = {"wait": t.MUTED, "done": t.SUCCESS, "error": t.ERROR, "run": t.ACCENT, "cancel": t.MUTED, "new": t.MUTED}
 
 
 class QueueFile:
@@ -51,7 +51,7 @@ class QueueRow(ctk.CTkFrame):
         self.status.grid(row=0, column=2, sticky="e", padx=(6, 0))
         self.remove = ctk.CTkButton(self, text="", image=t.ui_icon("x", "muted", 14), width=28, height=28,
                                     fg_color="transparent", hover_color=t.BORDER, corner_radius=t.RADIUS,
-                                    command=lambda: panel.remove(item))
+                                    command=self.remove_or_cancel)
         self.remove.grid(row=0, column=2, rowspan=2, padx=(4, 8))
         make_clickable(self, None, self.hover_on, self.hover_off)
         skip = str(self.remove)
@@ -63,7 +63,16 @@ class QueueRow(ctk.CTkFrame):
                     pass
         self.refresh()
 
+    def remove_or_cancel(self):
+        # крестик у файла в работе отменяет задачу, у остальных убирает файл из очереди
+        if self.item.status in ("run", "wait"):
+            self.panel.app.cancel_item(self.item)
+        else:
+            self.panel.remove(self.item)
+
     def click(self, event=None):
+        if event is None:
+            return
         ctrl = bool(event and event.state & 0x0004)
         self.panel.click(self.item, ctrl)
 
@@ -165,7 +174,7 @@ class QueuePanel(ctk.CTkFrame):
 
     def clear(self):
         for item in list(self.items):
-            if item.status != "run":
+            if item.status not in ("run", "wait"):
                 self.remove(item)
 
     def click(self, item, ctrl=False):

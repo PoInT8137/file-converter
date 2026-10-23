@@ -3,15 +3,15 @@ import queue
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+import shutil
 from pathlib import Path
 
-from .engines.base import Context, ConvertError
-from .naming import Namer, release
+from .engines.base import Cancelled, Context, ConvertError, set_current
+from .naming import Namer
 from .osutils import open_path, send_to_trash, show_in_folder
 from .registry import ext_of
 
-WAIT, RUN, DONE, ERROR = "wait", "run", "done", "error"
+WAIT, RUN, DONE, ERROR, CANCEL = "wait", "run", "done", "error", "cancel"
 
 _ids = itertools.count(1)
 
@@ -45,6 +45,14 @@ class Job:
         self.error = ""
         self.started = None
         self.finished = None
+        self.ctx = None
+        self.cancel_requested = False
+        self.done_event = threading.Event()
+
+    def result(self, timeout=None):
+        if not self.done_event.wait(timeout):
+            raise TimeoutError("задача не завершилась вовремя")
+        return self
 
     @property
     def dst_ext(self):
@@ -52,7 +60,10 @@ class Job:
 
 
 class JobQueue:
-    """Очередь задач. Потоки только кладут события в self.events, UI забирает их через after()."""
+    """Очередь задач. Потоки только кладут события в self.events, UI забирает их через after().
+
+    Рабочие потоки фоновые (daemon), поэтому закрытие окна не ждёт конца долгой конвертации.
+    """
 
     def __init__(self, engines, settings, stats=None, history=None, workers=2):
         self.engines = engines
@@ -60,15 +71,28 @@ class JobQueue:
         self.stats = stats
         self.history = history
         self.events = queue.Queue()
-        self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="job")
+        self.pending = queue.Queue()
         self.jobs = []
         self.lock = threading.Lock()
+        self.threads = []
+        for i in range(workers):
+            th = threading.Thread(target=self._worker, name=f"job{i}", daemon=True)
+            th.start()
+            self.threads.append(th)
+
+    def _worker(self):
+        while True:
+            job = self.pending.get()
+            if job is None:
+                return
+            self._run(job)
 
     def submit(self, job):
         with self.lock:
             self.jobs.append(job)
         self.events.put(("update", job))
-        return self.pool.submit(self._run, job)
+        self.pending.put(job)
+        return job
 
     def convert(self, path, conversion):
         job = Job([path], f"{Path(path).name} в {conversion.dst.upper()}", conversion=conversion)
@@ -77,6 +101,19 @@ class JobQueue:
     def run_tool(self, files, tool, params):
         job = Job(files, tool.title, tool=tool, params=params)
         return job, self.submit(job)
+
+    def active(self):
+        with self.lock:
+            return [j for j in self.jobs if j.status in (WAIT, RUN)]
+
+    def cancel(self, job):
+        job.cancel_requested = True
+        if job.ctx is not None:
+            job.ctx.cancel()
+
+    def cancel_all(self):
+        for job in self.active():
+            self.cancel(job)
 
     def _log(self, job, text):
         line = f"{time.strftime('%H:%M:%S')}  {text}"
@@ -89,14 +126,17 @@ class JobQueue:
             self.events.put(("update", job))
 
     def _run(self, job):
-        job.status = RUN
-        job.started = time.time()
-        self.events.put(("update", job))
         namer = Namer(self.settings.get("output_dir"), self.settings.get("name_template"))
         ctx = Context(self.settings.get("quality"), lambda p: self._progress(job, p),
                       lambda t: self._log(job, t), namer)
-        planned = None
+        job.ctx = ctx
+        set_current(ctx)
         try:
+            if job.cancel_requested:
+                raise Cancelled()
+            job.status = RUN
+            job.started = time.time()
+            self.events.put(("update", job))
             for f in job.files:
                 if not f.exists():
                     raise FileNotFoundError(str(f))
@@ -108,15 +148,22 @@ class JobQueue:
             else:
                 self._log(job, f"Старт: {job.tool.title}, файлов: {len(job.files)}")
                 job.outputs = job.tool.func(self.engines, job.files, ctx, job.params)
+            ctx.check()
             job.outputs = [Path(p) for p in job.outputs if Path(p).exists()]
             if not job.outputs:
                 raise ConvertError("Результат не получен")
             job.status = DONE
             job.progress = 1.0
             self._after_success(job)
+        except Cancelled:
+            job.status = CANCEL
+            job.error = "Отменено"
+            self._remove_partial(namer)
+            self._log(job, "Отменено, незаконченные файлы удалены")
         except Exception as e:
             job.status = ERROR
             job.error = friendly_error(e)
+            self._remove_partial(namer)
             self._log(job, f"Ошибка: {job.error}")
             if not isinstance(e, ConvertError):
                 detail = traceback.format_exc(limit=3).strip().splitlines()[-1]
@@ -124,10 +171,24 @@ class JobQueue:
             if self.history:
                 self.history.add(job.files[0] if job.files else "", "", ERROR, job.error)
         finally:
-            if planned is not None:
-                release(planned)
+            set_current(None)
+            namer.release_all()
             job.finished = time.time()
+            job.done_event.set()
             self.events.put(("done", job))
+
+    @staticmethod
+    def _remove_partial(namer):
+        # имена занимались только под несуществующие пути, значит всё по ним создала эта задача
+        for p in namer.reserved:
+            p = Path(p)
+            try:
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                elif p.exists():
+                    p.unlink()
+            except OSError:
+                pass
 
     def _after_success(self, job):
         first = job.outputs[0]
@@ -138,9 +199,7 @@ class JobQueue:
         if job.conversion and self.stats:
             self.stats.add(ext_of(job.files[0]), job.conversion.dst, first)
         elif self.stats:
-            self.stats.recent.insert(0, {"path": str(first), "time": time.time()})
-            self.stats.recent = self.stats.recent[:10]
-            self.stats.save()
+            self.stats.add_recent(first)
         if self.history:
             for src in job.files:
                 self.history.add(src, first, DONE)
@@ -149,12 +208,13 @@ class JobQueue:
                 show_in_folder(first)
             else:
                 open_path(first)
-        if self.settings.get("delete_source"):
-            for src in job.files:
-                if src in job.outputs:
-                    continue
-                if send_to_trash(src):
-                    self._log(job, f"Исходный файл перемещён в корзину: {src.name}")
+        # только для конвертации: инструменты вроде объединения не должны отправлять в корзину все исходники
+        if job.conversion and self.settings.get("delete_source"):
+            src = job.files[0]
+            if src not in job.outputs and send_to_trash(src):
+                self._log(job, f"Исходный файл перемещён в корзину: {src.name}")
 
     def shutdown(self):
-        self.pool.shutdown(wait=False, cancel_futures=True)
+        self.cancel_all()
+        for _ in self.threads:
+            self.pending.put(None)

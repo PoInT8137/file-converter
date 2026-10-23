@@ -20,7 +20,8 @@ FILTERS = {
     ("writer", "rtf"): "rtf:Rich Text Format",
     ("writer", "odt"): "odt:writer8",
     ("writer", "pdf"): "pdf:writer_pdf_Export",
-    ("calc", "csv"): "csv:Text - txt - csv (StarCalc):44,34,76,1",
+    # точка с запятой и UTF-8: так CSV ждёт русский Excel, BOM дописывается после конвертации
+    ("calc", "csv"): "csv:Text - txt - csv (StarCalc):59,34,76,1",
     ("calc", "html"): "html:HTML (StarCalc)",
     ("calc", "xlsx"): "xlsx:Calc MS Excel 2007 XML",
     ("calc", "ods"): "ods:calc8",
@@ -45,14 +46,43 @@ def profile_url():
     return path.as_uri()
 
 
-def build_command(soffice, src, dst_ext, outdir, profile=None):
+def read_text_any(path):
+    """Текст файла в UTF-8 или cp1251 (так сохраняют старые программы и русский Excel)."""
+    data = Path(path).read_bytes()
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", errors="replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("cp1251", errors="replace")
+
+
+def detect_separator(text):
+    lines = [l for l in text.splitlines()[:20] if l.strip()]
+    if not lines:
+        return ","
+    best, best_score = ",", -1
+    for sep in (";", ",", "\t"):
+        counts = [l.count(sep) for l in lines]
+        # разделитель встречается в каждой строке одинаковое число раз
+        score = min(counts) if len(set(counts)) == 1 else min(counts) - 1
+        if score > best_score:
+            best, best_score = sep, score
+    return best
+
+
+def build_command(soffice, src, dst_ext, outdir, profile=None, separator=","):
     src = Path(src)
     fam = family(src.suffix.lower().lstrip("."))
     target = FILTERS.get((fam, dst_ext), dst_ext)
     cmd = [str(soffice), "--headless", "--norestore", "--nologo", "--nodefault", "--nolockcheck",
            f"-env:UserInstallation={profile or profile_url()}"]
     if src.suffix.lower() == ".csv":
-        cmd.append("--infilter=Text - txt - csv (StarCalc):44,34,76,1")
+        options = f"{ord(separator)},34,76,1"
+        if separator == ";":
+            # с точкой с запятой обычно русский формат чисел: 250,5
+            options += ",,1049"
+        cmd.append(f"--infilter=Text - txt - csv (StarCalc):{options}")
     elif src.suffix.lower() == ".txt":
         cmd.append("--infilter=Text (encoded):UTF8")
     elif src.suffix.lower() in (".html", ".htm"):
@@ -71,10 +101,17 @@ def convert(engines, src, dst, ctx):
         tmp = Path(tmp)
         # копия с простым именем: soffice плохо переносит некоторые символы в путях
         work = tmp / ("input" + src.suffix.lower())
-        shutil.copy2(src, work)
+        separator = ","
+        if src.suffix.lower() == ".csv":
+            # LibreOffice получает CSV всегда в UTF-8, разделитель определяем сами
+            text = read_text_any(src)
+            separator = detect_separator(text)
+            work.write_text(text, encoding="utf-8", newline="")
+        else:
+            shutil.copy2(src, work)
         outdir = tmp / "out"
         outdir.mkdir()
-        cmd = build_command(soffice, work, dst_ext, outdir)
+        cmd = build_command(soffice, work, dst_ext, outdir, separator=separator)
         ctx.log(f"LibreOffice: {src.suffix.lstrip('.').upper()} в {dst_ext.upper()}")
         ctx.progress(0.1)
         with _lock:
@@ -83,6 +120,10 @@ def convert(engines, src, dst, ctx):
         if code != 0 or not produced:
             raise ConvertError("LibreOffice не смог конвертировать файл. " + last_lines(out))
         result = ensure_output(produced[0])
+        if dst_ext == "csv":
+            data = result.read_bytes()
+            if not data.startswith(b"\xef\xbb\xbf"):
+                result.write_bytes(b"\xef\xbb\xbf" + data)
         shutil.move(str(result), str(dst))
     ctx.progress(1.0)
     return [dst]

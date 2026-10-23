@@ -1,13 +1,42 @@
 import os
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+# контекст задачи текущего потока, через него run() узнаёт об отмене
+_local = threading.local()
+
 
 class ConvertError(Exception):
     """Ошибка с понятным пользователю текстом."""
+
+
+class Cancelled(ConvertError):
+    def __init__(self, text="Отменено"):
+        super().__init__(text)
+
+
+def set_current(ctx):
+    _local.ctx = ctx
+
+
+def current():
+    return getattr(_local, "ctx", None)
+
+
+def kill_tree(proc):
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True,
+                       creationflags=CREATE_NO_WINDOW, timeout=15)
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 class Context:
@@ -18,6 +47,19 @@ class Context:
         self.on_log = on_log
         self.namer = namer or Namer()
         self.cancelled = False
+        self.procs = set()
+        self.lock = threading.Lock()
+
+    def cancel(self):
+        with self.lock:
+            self.cancelled = True
+            procs = list(self.procs)
+        for p in procs:
+            kill_tree(p)
+
+    def check(self):
+        if self.cancelled:
+            raise Cancelled()
 
     def dpi(self):
         return {"high": 200, "medium": 150, "low": 100}.get(self.quality, 200)
@@ -26,6 +68,7 @@ class Context:
         return {"high": 92, "medium": 82, "low": 65}.get(self.quality, 92)
 
     def progress(self, value):
+        self.check()
         if self.on_progress:
             self.on_progress(max(0.0, min(1.0, float(value))))
 
@@ -54,6 +97,13 @@ def run(cmd, timeout=None, cwd=None, on_line=None, env=None):
     except OSError as e:
         raise ConvertError(f"Не удалось запустить {Path(cmd[0]).name}: {e}")
 
+    ctx = current()
+    if ctx is not None:
+        with ctx.lock:
+            ctx.procs.add(proc)
+            cancelled = ctx.cancelled
+        if cancelled:
+            kill_tree(proc)
     lines = []
     try:
         if on_line:
@@ -66,8 +116,14 @@ def run(cmd, timeout=None, cwd=None, on_line=None, env=None):
             out, _ = proc.communicate(timeout=timeout)
             lines = out.decode("utf-8", errors="replace").splitlines()
     except subprocess.TimeoutExpired:
-        proc.kill()
+        kill_tree(proc)
         raise ConvertError(f"{Path(cmd[0]).name} не ответил вовремя, процесс остановлен")
+    finally:
+        if ctx is not None:
+            with ctx.lock:
+                ctx.procs.discard(proc)
+    if ctx is not None:
+        ctx.check()
     return proc.returncode, "\n".join(lines)
 
 

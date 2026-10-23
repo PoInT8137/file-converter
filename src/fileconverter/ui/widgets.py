@@ -84,7 +84,7 @@ class Flow(ctk.CTkFrame):
         super().__init__(parent, fg_color=bg, corner_radius=0, width=1, height=1)
         self.gap = gap
         self.items = []
-        self.bind("<Configure>", lambda e: self.after_idle(self.layout), add="+")
+        self.bind("<Configure>", on_event(lambda e: self.after_idle(self.layout)), add="+")
 
     def add(self, widget):
         self.items.append(widget)
@@ -161,6 +161,14 @@ def segmented(parent, values, variable, command=None, width=None):
     return Choice(parent, values, variable, command)
 
 
+def on_event(func):
+    """Обработчик события, который молча пропускает вызов без события (зависший after() удалённого виджета)."""
+    def handler(event=None):
+        if event is not None:
+            return func(event)
+    return handler
+
+
 def walk(widget):
     yield widget
     for child in widget.winfo_children():
@@ -193,7 +201,7 @@ def make_clickable(widget, on_click=None, on_enter=None, on_leave=None):
     state = {"inside": False}
 
     def enter(_e=None):
-        if not state["inside"]:
+        if _e is not None and not state["inside"]:
             state["inside"] = True
             if on_enter:
                 on_enter()
@@ -209,8 +217,13 @@ def make_clickable(widget, on_click=None, on_enter=None, on_leave=None):
                 pass
         widget.after(30, check)
 
+    def press(event=None):
+        # без события сюда может попасть только зависший after() удалённого виджета, это не клик
+        if event is not None:
+            on_click()
+
     if on_click:
-        bind_tree(widget, "<Button-1>", lambda e: on_click())
+        bind_tree(widget, "<Button-1>", press)
     bind_tree(widget, "<Enter>", enter)
     bind_tree(widget, "<Leave>", leave)
     for w in walk(widget):
@@ -331,7 +344,7 @@ class Popover(ctk.CTkToplevel):
             y = anchor.winfo_rooty() - self.winfo_reqheight() - 6
         x = min(x, anchor.winfo_screenwidth() - self.winfo_reqwidth() - 10)
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
-        bind_tree(self, "<Button-1>", lambda e: self.close())
+        bind_tree(self, "<Button-1>", lambda e=None: self.close())
         self.after(timeout, self.close)
 
     def close(self):
@@ -359,7 +372,7 @@ class Dialog(ctk.CTkToplevel):
         label(self.body, title, 17, weight="bold").pack(anchor="w", pady=(0, 12))
         self.footer = ctk.CTkFrame(self, fg_color=t.BAR, corner_radius=0)
         self.footer.pack(fill="x", side="bottom")
-        self.bind("<Escape>", lambda e: self.cancel())
+        self.bind("<Escape>", on_event(lambda e: self.cancel()))
         self.protocol("WM_DELETE_WINDOW", self.cancel)
 
     def show(self):
@@ -393,7 +406,7 @@ class Dialog(ctk.CTkToplevel):
         accent_button(row, ok_text, ok_command or (lambda: self.ok(True)), width=140).pack(side="right")
         if cancel_text:
             outline_button(row, cancel_text, self.cancel, width=110).pack(side="right", padx=(0, 10))
-        self.bind("<Return>", lambda e: (ok_command or (lambda: self.ok(True)))())
+        self.bind("<Return>", on_event(lambda e: (ok_command or (lambda: self.ok(True)))()))
 
 
 def message(parent, title, text, kind="info"):

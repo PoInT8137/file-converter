@@ -1,5 +1,6 @@
 import threading
 import time
+import tkinter as tk
 from pathlib import Path
 
 import customtkinter as ctk
@@ -11,7 +12,7 @@ from ..osutils import human_size, show_in_folder
 from ..registry import CATEGORIES, CATEGORY_NAMES, category, registry, title
 from ..tools import QUICK, SECTION_TITLES, TOOLS_BY_ID, section_for_ext, section_tools
 from . import theme as t
-from .widgets import (DashedBox, Flow, Popover, ResponsiveGrid, TabBar, accent_button, caption, holder, label,
+from .widgets import (DashedBox, on_event, Flow, Popover, ResponsiveGrid, TabBar, accent_button, caption, holder, label,
                       make_clickable, mono_label, outline_button)
 
 DEFAULT_TARGET = {
@@ -34,14 +35,18 @@ class LogView(ctk.CTkFrame):
         super().__init__(parent, fg_color=t.BAR, corner_radius=t.RADIUS, border_width=1, border_color=t.BORDER)
         self.app = app
         caption(self, "ЖУРНАЛ").pack(anchor="w", padx=14, pady=(10, 4))
-        self.text = ctk.CTkTextbox(self, height=130, fg_color=t.BAR, text_color=t.CAPTION, font=t.mono(12),
-                                   corner_radius=0, border_width=0, wrap="word", activate_scrollbars=True)
-        self.text.pack(fill="x", padx=10)
-        self.text._textbox.tag_config("ok", foreground=t.SUCCESS)
-        self.text._textbox.tag_config("err", foreground=t.ERROR)
+        # обычный tk.Text вместо CTkTextbox: тот каждые 200 мс ставит after() с lambda и не снимает его
+        # при удалении, а такой зависший вызов потом срабатывает на чужом обработчике
+        scale = ctk.ScalingTracker.get_widget_scaling(self)
+        self.text = tk.Text(self, height=7, bg=t.BAR, fg=t.CAPTION, font=(t.MONO, -round(12 * scale)),
+                            relief="flat", borderwidth=0, highlightthickness=0, wrap="word",
+                            insertbackground=t.CAPTION, selectbackground=t.BORDER_BTN)
+        self.text.pack(fill="x", padx=14)
+        self.text.tag_config("ok", foreground=t.SUCCESS)
+        self.text.tag_config("err", foreground=t.ERROR)
         self.footer = holder(self, t.BAR)
         self.footer.pack(fill="x", padx=14, pady=(4, 10))
-        self.result = None
+        self.footer_for = None
 
     def show_job(self, job):
         self.text.configure(state="normal")
@@ -51,6 +56,9 @@ class LogView(ctk.CTkFrame):
             self.text.insert("end", line + "\n", tag)
         self.text.see("end")
         self.text.configure(state="disabled")
+        if self.footer_for == (job.id, job.status):
+            return
+        self.footer_for = (job.id, job.status)
         for w in self.footer.winfo_children():
             w.destroy()
         if job.status == "done" and job.outputs:
@@ -199,7 +207,7 @@ class ConvertPage(ctk.CTkScrollableFrame):
         self.props.grid(row=1, column=1, sticky="w")
         back = outline_button(head, "", self.app.go_home, width=t.H, image=t.ui_icon("x", "muted", 16))
         back.grid(row=0, column=2, rowspan=2, sticky="ne")
-        back.bind("<Enter>", lambda e: Popover(back, "Закрыть файл и вернуться на главную", timeout=1500), add="+")
+        back.bind("<Enter>", on_event(lambda e: Popover(back, "Закрыть файл и вернуться на главную", timeout=1500)), add="+")
         self.load_props(item)
 
         if not targets:

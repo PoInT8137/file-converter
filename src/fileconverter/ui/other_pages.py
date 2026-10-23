@@ -8,7 +8,7 @@ from ..config import data_dir
 from ..osutils import open_path, show_in_folder
 from ..registry import CATEGORIES, category, registry, title
 from . import theme as t
-from .widgets import (Dialog, Popover, accent_button, ask_yes_no, caption, entry, label, make_clickable, message,
+from .widgets import (Dialog, Popover, on_event, accent_button, ask_yes_no, caption, entry, label, make_clickable, message,
                       mono_label, outline_button, separator)
 
 STATUS = {"done": ("ГОТОВО", t.SUCCESS), "error": ("ОШИБКА", t.ERROR)}
@@ -30,59 +30,78 @@ class Page(ctk.CTkScrollableFrame):
 
 
 class HistoryPage(Page):
-    LIMIT = 100
+    # строки из CTk-виджетов дорогие, поэтому показываем порциями
+    STEP = 20
 
     def __init__(self, parent, app):
         super().__init__(parent, app)
+        self.shown = 0
+        self.signature = None
         self.refresh()
 
-    def refresh(self):
+    def refresh(self, force=False):
+        items = self.app.history.items
+        signature = (len(items), items[0]["time"] if items else 0)
+        if not force and signature == self.signature:
+            return
+        self.signature = signature
         b = self.reset()
         head = ctk.CTkFrame(b, fg_color=t.MAIN)
         head.pack(fill="x")
         label(head, "История", 22, weight="bold").pack(side="left")
         outline_button(head, "Очистить историю", self.clear, width=170, size=12,
                        image=t.ui_icon("trash", "muted", 16), compound="left").pack(side="right")
-        items = self.app.history.items
         label(b, f"Последние конвертации: {len(items)}", 13, t.MUTED).pack(anchor="w", pady=(2, 14))
         table = ctk.CTkFrame(b, fg_color=t.CARD, corner_radius=t.RADIUS, border_width=1, border_color=t.BORDER)
         table.pack(fill="x")
         table.grid_columnconfigure(1, weight=1)
         table.grid_columnconfigure(2, weight=1)
-        for c, text in enumerate(["ВРЕМЯ", "ИСХОДНЫЙ ФАЙЛ", "РЕЗУЛЬТАТ", "СТАТУС", ""]):
+        for c, text in enumerate(["ВРЕМЯ", "ИСХОДНЫЙ ФАЙЛ", "РЕЗУЛЬТАТ", "СТАТУС"]):
             caption(table, text, size=10).grid(row=0, column=c, sticky="w", padx=12, pady=(10, 6))
         if not items:
-            mono_label(table, "История пуста", 12).grid(row=1, column=0, columnspan=5, pady=24)
-        for r, it in enumerate(items[: self.LIMIT], start=1):
-            self.row(table, r, it)
+            mono_label(table, "История пуста", 12).grid(row=1, column=0, columnspan=6, pady=24)
+        self.table = table
+        self.shown = 0
+        self.more = None
+        self.show_more()
+
+    def show_more(self):
+        items = self.app.history.items
+        start, end = self.shown, min(self.shown + self.STEP, len(items))
+        for r in range(start, end):
+            self.row(self.table, r + 1, items[r])
+        self.shown = end
+        if self.more is not None:
+            self.more.destroy()
+            self.more = None
+        rest = len(items) - self.shown
+        if rest > 0:
+            self.more = outline_button(self.body, f"Показать ещё {min(rest, self.STEP)}", self.show_more, width=200,
+                                       size=12)
+            self.more.pack(anchor="w", pady=(10, 0))
 
     def row(self, table, r, it):
         mono_label(table, time.strftime("%d.%m %H:%M", time.localtime(it["time"])), 11).grid(
             row=r, column=0, sticky="w", padx=12, pady=3)
+        # иконка и имя одной меткой: каждый CTk-виджет дорогой, а строк много
         src = Path(it["source"])
-        cell = ctk.CTkFrame(table, fg_color="transparent")
-        cell.grid(row=r, column=1, sticky="w", padx=12)
-        ctk.CTkLabel(cell, text="", image=t.get_icon(src.suffix, 20)).pack(side="left", padx=(0, 6))
-        label(cell, short(src.name), 12).pack(side="left")
+        ctk.CTkLabel(table, text=" " + short(src.name), image=t.get_icon(src.suffix, 20), compound="left",
+                     font=t.font(12), text_color=t.TEXT, anchor="w").grid(row=r, column=1, sticky="w", padx=12)
         res = Path(it["result"]) if it.get("result") else None
-        cell = ctk.CTkFrame(table, fg_color="transparent")
-        cell.grid(row=r, column=2, sticky="w", padx=12)
         if res:
-            ctk.CTkLabel(cell, text="", image=t.get_icon(res.suffix, 20)).pack(side="left", padx=(0, 6))
-            label(cell, short(res.name), 12).pack(side="left")
+            ctk.CTkLabel(table, text=" " + short(res.name), image=t.get_icon(res.suffix, 20), compound="left",
+                         font=t.font(12), text_color=t.TEXT, anchor="w").grid(row=r, column=2, sticky="w", padx=12)
         else:
-            label(cell, short(it.get("message", "")), 11, t.MUTED).pack(side="left")
+            label(table, short(it.get("message", "")), 11, t.MUTED, anchor="w").grid(row=r, column=2, sticky="w", padx=12)
         text, color = STATUS.get(it["status"], (it["status"].upper(), t.MUTED))
         ctk.CTkLabel(table, text=text, font=t.mono(11, "bold"), text_color=color).grid(row=r, column=3, sticky="w", padx=12)
-        btns = ctk.CTkFrame(table, fg_color="transparent")
-        btns.grid(row=r, column=4, sticky="e", padx=8, pady=2)
         if res:
-            open_btn = outline_button(btns, "", lambda: self.open(res), width=t.H,
+            open_btn = outline_button(table, "", lambda: self.open(res), width=t.H,
                                       image=t.ui_icon("external-link", "muted", 16))
-            open_btn.pack(side="left", padx=2)
-            folder_btn = outline_button(btns, "", lambda: show_in_folder(res), width=t.H,
+            open_btn.grid(row=r, column=4, padx=(8, 2), pady=2)
+            folder_btn = outline_button(table, "", lambda: show_in_folder(res), width=t.H,
                                         image=t.ui_icon("folder-open", "muted", 16))
-            folder_btn.pack(side="left", padx=2)
+            folder_btn.grid(row=r, column=5, padx=(2, 8), pady=2)
             hint(open_btn, "Открыть")
             hint(folder_btn, "Показать в папке")
 
@@ -94,11 +113,11 @@ class HistoryPage(Page):
     def clear(self):
         if ask_yes_no(self, "Очистить историю", "Удалить все записи истории? Сами файлы не удаляются.", "Очистить"):
             self.app.history.clear()
-            self.refresh()
+            self.refresh(force=True)
 
 
 def hint(widget, text):
-    widget.bind("<Enter>", lambda e: Popover(widget, text, timeout=1500), add="+")
+    widget.bind("<Enter>", on_event(lambda e: Popover(widget, text, timeout=1500)), add="+")
 
 
 def short(text, n=26):
@@ -112,6 +131,7 @@ class SettingsPage(Page):
 
     def refresh(self):
         b = self.reset()
+        self.path_entries = {}
         label(b, "Настройки", 22, weight="bold").pack(anchor="w")
         label(b, "Изменения сохраняются сразу.", 13, t.MUTED).pack(anchor="w", pady=(2, 14))
 
@@ -171,8 +191,11 @@ class SettingsPage(Page):
         def save(_e=None):
             self.app.settings.set(key, e.get().strip())
 
+        # сохраняем при каждом изменении: FocusOut не приходит, если сразу нажать кнопку или уйти в другой раздел
+        e.bind("<KeyRelease>", save)
         e.bind("<FocusOut>", save)
         e.bind("<Return>", save)
+        self.path_entries[key] = e
 
         def browse():
             path = filedialog.askopenfilename(title=f"Где находится {exe}", filetypes=[(exe, exe), ("Программы", "*.exe")])
@@ -184,7 +207,8 @@ class SettingsPage(Page):
         outline_button(row, "Обзор", browse, width=90, size=12).pack(side="left", padx=(8, 0))
 
     def rescan(self):
-        self.focus_set()
+        for key, e in self.path_entries.items():
+            self.app.settings.set(key, e.get().strip())
         self.app.rescan_engines()
         self.refresh()
 
@@ -207,42 +231,79 @@ class AllConversions(Dialog):
                                            scrollbar_button_color=t.BORDER)
         self.list.pack(fill="both", expand=True, pady=(12, 0))
         self.all = registry.all_conversions(app.engines)
-        e.bind("<KeyRelease>", lambda ev: self.fill())
-        self.fill()
+        # строки создаются один раз и порциями, поиск только прячет и показывает готовые
+        self.plan = []
+        for key, cname in CATEGORIES:
+            by_src = {}
+            for c in self.all:
+                if category(c.src) == key:
+                    by_src.setdefault(c.src, []).append(c)
+            if by_src:
+                self.plan.append(("caption", cname, list(by_src)))
+                self.plan += [("row", src, convs) for src, convs in by_src.items()]
+        self.widgets = []
+        self.empty = mono_label(self.list, "Ничего не найдено", 12)
+        e.bind("<KeyRelease>", on_event(lambda ev: self.fill()))
         self.buttons("Закрыть", None)
+        self.build_some()
         self.after(150, e.focus_set)
 
-    def fill(self):
-        for w in self.list.winfo_children():
-            w.destroy()
-        q = self.entry.get().lower().replace(" в ", " ").split()
-        shown = 0
-        for key, cname in CATEGORIES:
-            items = [c for c in self.all if category(c.src) == key and self.match(c, q)]
-            if not items:
-                continue
-            caption(self.list, cname.upper()).pack(anchor="w", pady=(10, 4))
-            by_src = {}
-            for c in items:
-                by_src.setdefault(c.src, []).append(c)
-            for src, convs in by_src.items():
-                row = ctk.CTkFrame(self.list, fg_color=t.CARD, corner_radius=t.RADIUS)
-                row.pack(fill="x", pady=2)
-                ctk.CTkLabel(row, text="", image=t.get_icon(src, 24)).pack(side="left", padx=(10, 6), pady=8)
-                label(row, src.upper(), 13, weight="bold", width=50, anchor="w").pack(side="left")
-                wrap = ctk.CTkFrame(row, fg_color="transparent")
-                wrap.pack(side="left", fill="x", expand=True, padx=6, pady=6)
-                for i, c in enumerate(convs):
-                    b = ctk.CTkButton(wrap, text=c.dst.upper(), width=56, height=t.H - 8, corner_radius=t.RADIUS,
-                                      fg_color=t.BAR, hover_color=t.ACCENT, text_color=t.TEXT, font=t.mono(11, "bold"),
-                                      border_width=1, border_color=t.BORDER_BTN,
-                                      command=lambda c=c: self.pick(c))
-                    b.grid(row=i // 8, column=i % 8, padx=2, pady=2)
-                shown += 1
-                if shown > 60:
+    def build_some(self):
+        try:
+            for _ in range(4):
+                if len(self.widgets) >= len(self.plan):
                     return
-        if shown == 0:
-            mono_label(self.list, "Ничего не найдено", 12).pack(pady=20)
+                kind, name, data = self.plan[len(self.widgets)]
+                if kind == "caption":
+                    self.widgets.append((kind, caption(self.list, name.upper()), data))
+                else:
+                    self.widgets.append((kind, self.make_row(name, data), data))
+            self.fill()
+            self.after(15, self.build_some)
+        except Exception:
+            pass
+
+    def make_row(self, src, convs):
+        row = ctk.CTkFrame(self.list, fg_color=t.CARD, corner_radius=t.RADIUS)
+        ctk.CTkLabel(row, text="", image=t.get_icon(src, 24)).pack(side="left", padx=(10, 6), pady=8)
+        label(row, src.upper(), 13, weight="bold", width=50, anchor="w").pack(side="left")
+        wrap = ctk.CTkFrame(row, fg_color="transparent")
+        wrap.pack(side="left", fill="x", expand=True, padx=6, pady=6)
+        row.chips = []
+        for c in convs:
+            b = ctk.CTkButton(wrap, text=c.dst.upper(), width=56, height=t.H - 8, corner_radius=t.RADIUS,
+                              fg_color=t.BAR, hover_color=t.ACCENT, text_color=t.TEXT, font=t.mono(11, "bold"),
+                              border_width=1, border_color=t.BORDER_BTN, command=lambda c=c: self.pick(c))
+            row.chips.append((c, b))
+        return row
+
+    def fill(self):
+        q = self.entry.get().lower().replace(" в ", " ").split()
+        visible_src = set()
+        for kind, w, data in self.widgets:
+            w.pack_forget()
+        for kind, w, data in self.widgets:
+            if kind == "caption":
+                continue
+            n = 0
+            for c, b in w.chips:
+                if self.match(c, q):
+                    b.grid(row=n // 8, column=n % 8, padx=2, pady=2)
+                    n += 1
+                else:
+                    b.grid_remove()
+            w.visible = n > 0
+            if n:
+                visible_src.add(data[0].src)
+        self.empty.pack_forget()
+        for kind, w, data in self.widgets:
+            if kind == "caption":
+                if any(s in visible_src for s in data):
+                    w.pack(anchor="w", pady=(10, 4))
+            elif w.visible:
+                w.pack(fill="x", pady=2)
+        if not visible_src and len(self.widgets) >= len(self.plan):
+            self.empty.pack(pady=20)
 
     @staticmethod
     def match(c, q):

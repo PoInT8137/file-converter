@@ -2,6 +2,8 @@ import html
 import logging
 import re
 import shutil
+import threading
+from functools import wraps
 from pathlib import Path
 
 import pymupdf
@@ -11,6 +13,18 @@ from ..naming import pages_folder
 from .base import ConvertError, ensure_output
 
 PLEX_MONO = assets_dir() / "fonts" / "IBMPlexMono-Regular.ttf"
+
+# PyMuPDF при импорте переводит MuPDF в однопоточный режим (reinit_singlethreaded),
+# поэтому вся работа с ним из потоков задач и окна идёт по очереди
+LOCK = threading.RLock()
+
+
+def locked(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with LOCK:
+            return func(*args, **kwargs)
+    return wrapper
 
 
 def open_pdf(path, password=None):
@@ -28,6 +42,7 @@ def open_pdf(path, password=None):
     return doc
 
 
+@locked
 def pdf_info(path):
     """Число страниц, наличие текстового слоя и защита паролем."""
     info = {"pages": 0, "has_text": False, "encrypted": False}
@@ -67,8 +82,12 @@ class _PageLogHandler(logging.Handler):
         self.ctx = ctx
         self.stage = 0
         self.last = 0
+        # лог общий, берём только записи своего потока
+        self.thread = threading.get_ident()
 
     def emit(self, record):
+        if record.thread != self.thread:
+            return
         m = self.pattern.search(record.getMessage())
         if not m:
             return
@@ -76,9 +95,14 @@ class _PageLogHandler(logging.Handler):
         if cur < self.last:
             self.stage = 1
         self.last = cur
-        self.ctx.progress(0.05 + 0.45 * self.stage + 0.45 * cur / max(total, 1))
+        try:
+            self.ctx.progress(0.05 + 0.45 * self.stage + 0.45 * cur / max(total, 1))
+        except ConvertError:
+            # отмену из обработчика лога не пробросить, её проверит to_docx после конвертации
+            pass
 
 
+@locked
 def to_docx(engines, src, dst, ctx):
     try:
         from pdf2docx import Converter
@@ -112,6 +136,7 @@ def to_docx(engines, src, dst, ctx):
     return [ensure_output(dst)]
 
 
+@locked
 def to_txt(engines, src, dst, ctx):
     doc = open_pdf(src)
     parts = []
@@ -126,6 +151,7 @@ def to_txt(engines, src, dst, ctx):
     return [dst]
 
 
+@locked
 def to_html(engines, src, dst, ctx):
     doc = open_pdf(src)
     body = []
@@ -153,6 +179,7 @@ def render_pages(src, ctx, dpi=None):
             yield i, total, page.get_pixmap(dpi=dpi, alpha=False)
 
 
+@locked
 def to_images(engines, src, dst, ctx):
     dst = Path(dst)
     ext = dst.suffix.lower().lstrip(".")
@@ -166,7 +193,7 @@ def to_images(engines, src, dst, ctx):
             target = dst
         else:
             if folder is None:
-                folder = pages_folder(dst)
+                folder = pages_folder(dst, ctx.namer)
             target = folder / f"{dst.stem}-{i + 1:02d}.{ext}"
         if ext in ("jpg", "jpeg"):
             pix.save(str(target), jpg_quality=ctx.jpeg_quality())
@@ -179,6 +206,7 @@ def to_images(engines, src, dst, ctx):
     return outputs
 
 
+@locked
 def to_pptx(engines, src, dst, ctx):
     from pptx import Presentation
     from pptx.util import Emu
@@ -204,6 +232,7 @@ def to_pptx(engines, src, dst, ctx):
     return [ensure_output(dst)]
 
 
+@locked
 def to_xlsx(engines, src, dst, ctx):
     from openpyxl import Workbook
 
@@ -230,6 +259,7 @@ def to_xlsx(engines, src, dst, ctx):
     return [ensure_output(dst)]
 
 
+@locked
 def images_to_pdf(engines, files, dst, ctx):
     from PIL import Image
 
@@ -291,6 +321,7 @@ def parse_pages(text, total):
     return result
 
 
+@locked
 def merge(engines, files, ctx, params):
     if len(files) < 2:
         raise ConvertError("Для объединения выберите хотя бы два PDF")
@@ -305,6 +336,7 @@ def merge(engines, files, ctx, params):
     return [dst]
 
 
+@locked
 def split(engines, files, ctx, params):
     outputs = []
     for src in files:
@@ -330,6 +362,7 @@ def split(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def extract_pages(engines, files, ctx, params):
     outputs = []
     for src in files:
@@ -346,6 +379,7 @@ def extract_pages(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def delete_pages(engines, files, ctx, params):
     outputs = []
     for src in files:
@@ -362,6 +396,7 @@ def delete_pages(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def rotate(engines, files, ctx, params):
     angle = int(params.get("angle", 90))
     outputs = []
@@ -379,6 +414,7 @@ def rotate(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def reorder(engines, files, ctx, params):
     outputs = []
     for src in files:
@@ -392,6 +428,7 @@ def reorder(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def compress(engines, files, ctx, params):
     level = params.get("level", "medium")
     settings = {"low": (150, 80), "medium": (120, 65), "high": (96, 50)}
@@ -420,6 +457,7 @@ def compress(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def encrypt(engines, files, ctx, params):
     password = params.get("password") or ""
     if not password:
@@ -436,6 +474,7 @@ def encrypt(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def decrypt(engines, files, ctx, params):
     password = params.get("password") or ""
     outputs = []
@@ -448,6 +487,7 @@ def decrypt(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def watermark(engines, files, ctx, params):
     text = (params.get("text") or "").strip()
     if not text:
@@ -473,6 +513,7 @@ def watermark(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def set_metadata(engines, files, ctx, params):
     outputs = []
     for src in files:
@@ -489,6 +530,7 @@ def set_metadata(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def read_metadata(path):
     try:
         with pymupdf.open(str(path)) as doc:
@@ -505,6 +547,7 @@ def extract_text(engines, files, ctx, params):
     return outputs
 
 
+@locked
 def extract_images(engines, files, ctx, params):
     outputs = []
     for src in files:

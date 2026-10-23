@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from .base import ConvertError, ensure_output, last_lines, run
+from .pdf import LOCK, locked
 
 IMAGE_EXTS = ["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "gif", "heic"]
 
@@ -41,6 +42,7 @@ def recognize(engines, image, outbase, kind, ctx):
     return result
 
 
+@locked
 def page_images(src, tmp, ctx):
     """Готовит картинки для распознавания: страницы PDF рендерятся в 300 dpi."""
     src = Path(src)
@@ -101,16 +103,20 @@ def to_docx(engines, src, dst, ctx):
 def to_pdf(engines, src, dst, ctx):
     import pymupdf
 
-    out = pymupdf.open()
     with ctx.tempdir() as tmp:
         images = page_images(src, tmp, ctx)
+        parts = []
         for i, img in enumerate(images):
             ctx.log(f"Распознавание страницы {i + 1} из {len(images)}")
-            part = recognize(engines, img, Path(tmp) / f"out{i}", "pdf", ctx)
-            with pymupdf.open(str(part)) as doc:
-                out.insert_pdf(doc)
-            ctx.progress((i + 1) / len(images) * 0.95)
-        out.save(str(dst), garbage=3, deflate=True)
-    out.close()
+            parts.append(recognize(engines, img, Path(tmp) / f"out{i}", "pdf", ctx))
+            ctx.progress((i + 1) / len(images) * 0.9)
+        # Tesseract работает без блокировки, PyMuPDF нужен только для склейки страниц
+        with LOCK:
+            out = pymupdf.open()
+            for part in parts:
+                with pymupdf.open(str(part)) as doc:
+                    out.insert_pdf(doc)
+            out.save(str(dst), garbage=3, deflate=True)
+            out.close()
     ctx.progress(1.0)
     return [ensure_output(dst)]

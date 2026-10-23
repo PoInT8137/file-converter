@@ -42,6 +42,12 @@ class Stats:
                 self.recent = self.recent[:10]
             self.save()
 
+    def add_recent(self, result_path):
+        with self.lock:
+            self.recent.insert(0, {"path": str(result_path), "time": time.time()})
+            self.recent = self.recent[:10]
+            self.save()
+
     def count(self, src, dst):
         return self.counts.get(pair_key(src, dst), 0)
 
@@ -64,12 +70,16 @@ class Stats:
             self.save()
 
     def top_pairs(self, n=8):
+        # копии под блокировкой: счётчики меняются из потоков задач
+        with self.lock:
+            pinned = list(self.pinned)
+            counts = dict(self.counts)
         result = []
-        for key in self.pinned:
+        for key in pinned:
             src, _, dst = key.partition(">")
             if (src, dst) not in result:
                 result.append((src, dst))
-        used = sorted(((c, k) for k, c in self.counts.items() if c > 0), key=lambda x: (-x[0], x[1]))
+        used = sorted(((c, k) for k, c in counts.items() if c > 0), key=lambda x: (-x[0], x[1]))
         for _, key in used:
             src, _, dst = key.partition(">")
             if (src, dst) not in result:
@@ -89,7 +99,8 @@ class Stats:
         return best
 
     def recent_items(self, n=3):
-        return self.recent[:n]
+        with self.lock:
+            return list(self.recent[:n])
 
 
 class History:

@@ -204,3 +204,27 @@ def test_finder_candidates(monkeypatch, tmp_path):
     monkeypatch.setattr(finder.shutil, "which", lambda name: None)
     monkeypatch.setattr(finder, "engines_dirs", lambda: [tmp_path / "none"])
     assert finder.find_tool("tesseract") == target
+
+def test_csv_separator_and_encoding(tmp_path):
+    assert libreoffice.detect_separator("Имя;Сумма\nИван;250,5\n") == ";"
+    assert libreoffice.detect_separator("a,b,c\n1,2,3\n") == ","
+    assert libreoffice.detect_separator("a\tb\n1\t2\n") == "\t"
+    f = tmp_path / "ru.csv"
+    f.write_bytes("Имя;Город".encode("cp1251"))
+    assert libreoffice.read_text_any(f) == "Имя;Город"
+    f.write_bytes(b"\xef\xbb\xbf" + "Имя".encode("utf-8"))
+    assert libreoffice.read_text_any(f) == "Имя"
+    cmd = libreoffice.build_command("soffice.exe", tmp_path / "a.csv", "xlsx", tmp_path, "file:///p", separator=";")
+    assert "--infilter=Text - txt - csv (StarCalc):59,34,76,1,,1049" in cmd
+
+
+def test_namer_release_all(tmp_path):
+    from fileconverter.naming import _reserved
+    src = tmp_path / "a.png"
+    src.write_text("x")
+    namer = Namer()
+    p = namer.file(src, "jpg")
+    assert str(p).lower() in _reserved
+    namer.release_all()
+    assert str(p).lower() not in _reserved
+    assert Namer().file(src, "jpg").name == "a.jpg"

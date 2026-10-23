@@ -23,7 +23,7 @@ from .ui.convert_page import ConvertPage
 from .ui.other_pages import AllConversions, HistoryPage, SettingsPage
 from .ui.queue_panel import QueuePanel
 from .ui.tools_page import ToolsPage
-from .ui.widgets import (Dot, FieldsDialog, Flow, Popover, caption, checkbox, entry, label, make_clickable, message,
+from .ui.widgets import (Dot, on_event, FieldsDialog, Flow, Popover, ask_yes_no, caption, checkbox, entry, label, make_clickable, message,
                          mono_label, outline_button, segmented, separator)
 
 try:
@@ -113,7 +113,11 @@ class App(ctk.CTk, DND_BASE):
         if self.dnd_ok:
             self.register_drop(self, self.add_files)
         self.bind_all("<Control-KeyPress>", self.on_ctrl_key)
-        self.bind("<Escape>", lambda e: self.close_search())
+        # у полей ввода Tk своя комбинация Ctrl+K "удалить до конца строки", она срабатывает раньше bind_all
+        for cls in ("Entry", "Text"):
+            self.bind_class(cls, "<Control-Key-k>", self.on_ctrl_key)
+            self.bind_class(cls, "<Control-Key-K>", self.on_ctrl_key)
+        self.bind("<Escape>", on_event(lambda e: self.close_search()))
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.show_section("convert")
         self.after(80, self.poll)
@@ -154,9 +158,9 @@ class App(ctk.CTk, DND_BASE):
                             fg_color=t.CARD, corner_radius=4, height=20, width=48)
         hint.place(relx=1.0, x=-10, rely=0.5, anchor="e")
         self.search.bind("<KeyRelease>", self.on_search_key)
-        self.search.bind("<Return>", lambda e: self.search_pick(0))
-        self.search.bind("<Down>", lambda e: self.search_focus_first())
-        self.search.bind("<FocusOut>", lambda e: self.after(200, self.maybe_close_search))
+        self.search.bind("<Return>", on_event(lambda e: self.search_pick(0)))
+        self.search.bind("<Down>", on_event(lambda e: self.search_focus_first()))
+        self.search.bind("<FocusOut>", on_event(lambda e: self.after(200, self.maybe_close_search)))
         separator(self).grid(row=0, column=0, sticky="sew")
 
     def build_sidebar(self):
@@ -216,7 +220,7 @@ class App(ctk.CTk, DND_BASE):
             else:
                 page = ToolsPage(self.content, self, key)
             self.pages[key] = page
-        elif key == "history":
+        elif key in ("history", "settings"):
             page.refresh()
         elif isinstance(page, ToolsPage):
             page.refresh()
@@ -353,6 +357,10 @@ class App(ctk.CTk, DND_BASE):
             self.queue_panel.refresh(i)
         return job
 
+    def cancel_item(self, item):
+        if item.jobs:
+            self.jobs.cancel(item.jobs[-1])
+
     def run_quick(self, tool_id, items):
         tool = TOOLS_BY_ID[tool_id]
         if not self.engines.available(tool.engine):
@@ -431,6 +439,7 @@ class App(ctk.CTk, DND_BASE):
             s.set("name_template", e.get().strip() or "{name}")
             changed()
 
+        e.bind("<KeyRelease>", save_template)
         e.bind("<FocusOut>", save_template)
         e.bind("<Return>", save_template)
 
@@ -451,23 +460,34 @@ class App(ctk.CTk, DND_BASE):
         self.ui_calls.put(fn)
 
     def poll(self):
-        self.gc_tick += 1
-        if self.gc_tick % 25 == 0:
-            gc.collect()
+        # ошибка в одном событии не должна останавливать весь цикл обновления окна
         try:
-            while True:
-                self.ui_calls.get_nowait()()
-        except queue.Empty:
-            pass
-        handled = 0
+            self.gc_tick += 1
+            if self.gc_tick % 25 == 0:
+                gc.collect()
+            for _ in range(200):
+                try:
+                    fn = self.ui_calls.get_nowait()
+                except queue.Empty:
+                    break
+                self.safe(fn)
+            for _ in range(200):
+                try:
+                    event = self.jobs.events.get_nowait()
+                except queue.Empty:
+                    break
+                self.safe(lambda: self.handle_event(event))
+        finally:
+            try:
+                self.after(80, self.poll)
+            except Exception:
+                pass
+
+    def safe(self, fn):
         try:
-            while handled < 200:
-                event = self.jobs.events.get_nowait()
-                handled += 1
-                self.handle_event(event)
-        except queue.Empty:
-            pass
-        self.after(80, self.poll)
+            fn()
+        except Exception:
+            self.report_callback_exception(*sys.exc_info())
 
     def handle_event(self, event):
         kind, job = event[0], event[1]
@@ -475,7 +495,7 @@ class App(ctk.CTk, DND_BASE):
         for item in items:
             if item.jobs and item.jobs[-1] is not job:
                 continue
-            item.status = {"wait": "wait", "run": "run", "done": "done", "error": "error"}[job.status]
+            item.status = job.status
             item.progress = job.progress
             if job.status == "done":
                 item.outputs = job.outputs
@@ -553,7 +573,7 @@ class App(ctk.CTk, DND_BASE):
                                 command=lambda n=i: self.search_pick(n))
             row.pack(fill="x")
             mono_label(row, kind, 9).place(relx=1.0, x=-10, rely=0.5, anchor="e")
-            row.bind("<Return>", lambda e, n=i: self.search_pick(n))
+            row.bind("<Return>", on_event(lambda e, n=i: self.search_pick(n)))
             self.search_buttons.append(row)
         pop.update_idletasks()
         x = self.search.winfo_rootx()
@@ -596,6 +616,12 @@ class App(ctk.CTk, DND_BASE):
         self.pages[tool.section].select(tool)
 
     def on_close(self):
+        active = self.jobs.active()
+        if active and not self.selftest:
+            text = (f"Ещё выполняется задач: {len(active)}. Если закрыть программу, они будут остановлены, "
+                    "а незаконченные файлы удалены.")
+            if not ask_yes_no(self, "Закрыть File Converter", text, "Остановить и закрыть"):
+                return
         self.jobs.shutdown()
         self.destroy()
         gc.collect()
