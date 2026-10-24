@@ -12,8 +12,9 @@ from ..osutils import human_size, show_in_folder
 from ..registry import CATEGORIES, CATEGORY_NAMES, category, registry, title
 from ..tools import QUICK, SECTION_TITLES, TOOLS_BY_ID, section_for_ext, section_tools
 from . import theme as t
-from .widgets import (DashedBox, on_event, Flow, Popover, ResponsiveGrid, TabBar, accent_button, caption, holder, label,
-                      make_clickable, mono_label, outline_button)
+from . import motion
+from .widgets import (DashedBox, on_event, Flow, Popover, ResponsiveGrid, TabBar, ThemedText, accent_button, caption,
+                      empty_state, holder, label, make_clickable, mono_label, outline_button)
 
 DEFAULT_TARGET = {
     "pdf": "docx", "docx": "pdf", "doc": "pdf", "odt": "pdf", "rtf": "pdf", "txt": "pdf",
@@ -38,12 +39,11 @@ class LogView(ctk.CTkFrame):
         # обычный tk.Text вместо CTkTextbox: тот каждые 200 мс ставит after() с lambda и не снимает его
         # при удалении, а такой зависший вызов потом срабатывает на чужом обработчике
         scale = ctk.ScalingTracker.get_widget_scaling(self)
-        self.text = tk.Text(self, height=7, bg=t.BAR, fg=t.CAPTION, font=(t.MONO, -round(12 * scale)),
-                            relief="flat", borderwidth=0, highlightthickness=0, wrap="word",
-                            insertbackground=t.CAPTION, selectbackground=t.BORDER_BTN)
+        self.text = ThemedText(self, {"bg": t.BAR, "fg": t.CAPTION, "insertbackground": t.CAPTION,
+                                      "selectbackground": t.BORDER_BTN},
+                               {"ok": t.SUCCESS, "err": t.ERROR}, height=7, font=(t.MONO, -round(12 * scale)),
+                               relief="flat", borderwidth=0, highlightthickness=0, wrap="word")
         self.text.pack(fill="x", padx=14)
-        self.text.tag_config("ok", foreground=t.SUCCESS)
-        self.text.tag_config("err", foreground=t.ERROR)
         self.footer = holder(self, t.BAR)
         self.footer.pack(fill="x", padx=14, pady=(4, 10))
         self.footer_for = None
@@ -77,6 +77,7 @@ class ConvertPage(ctk.CTkScrollableFrame):
         self.log = None
         self.go = None
         self.body = None
+        self.drop = None
         self.params_open = app.settings.get("params_open")
         self.show_home()
 
@@ -87,22 +88,24 @@ class ConvertPage(ctk.CTkScrollableFrame):
         self.body.pack(fill="both", expand=True, padx=28, pady=22)
         self.log = None
         self.go = None
+        self.drop = None
         self._parent_canvas.yview_moveto(0)
         return self.body
 
     def show_home(self):
         self.item = None
         b = self.clear()
-        label(b, "Конвертация файла", 22, weight="bold").pack(anchor="w")
-        label(b, "Перетащите файлы в окно и выберите формат. Результат появится рядом с исходным файлом.",
-              13, t.MUTED, wraplength=440, justify="left").pack(anchor="w", pady=(2, 16))
+        label(b, "Конвертация", 22, weight="bold").pack(anchor="w")
+        label(b, "Результат сохраняется рядом с исходным файлом.", 13, t.MUTED).pack(anchor="w", pady=(2, 16))
 
-        drop = DashedBox(b, height=150)
+        drop = DashedBox(b, height=190)
         drop.pack(fill="x")
-        ctk.CTkLabel(drop.inner, text="", image=t.ui_icon("upload", "accent", 30)).pack()
-        label(drop.inner, "Перетащите файлы сюда", 15, weight="bold").pack(pady=(6, 2))
-        mono_label(drop.inner, "PDF, DOCX, XLSX, PPTX, JPG, PNG, HEIC, MP3, MP4 и другие", 11).pack(pady=(0, 8))
-        outline_button(drop.inner, "Выбрать файлы", self.app.pick_files, width=170).pack()
+        self.drop = drop
+        ctk.CTkLabel(drop.inner, text="", image=t.ui_icon("upload", "accent", 32)).pack()
+        label(drop.inner, "Перетащите файлы в окно", 16, weight="bold").pack(pady=(8, 2))
+        mono_label(drop.inner, "PDF, DOCX, XLSX, PPTX, JPG, PNG, HEIC, MP3, MP4 и другие", 11).pack(pady=(0, 12))
+        accent_button(drop.inner, "Выбрать файлы", self.app.pick_files, width=170, height=40, size=13).pack()
+        mono_label(drop.inner, "или Ctrl O", 10).pack(pady=(6, 0))
 
         head = ctk.CTkFrame(b, fg_color=t.MAIN)
         head.pack(fill="x", pady=(26, 10))
@@ -124,6 +127,13 @@ class ConvertPage(ctk.CTkScrollableFrame):
             mono_label(b, "Здесь появятся последние результаты", 11).pack(anchor="w")
         for r in recent:
             self.recent_row(b, r)
+
+    def highlight_drop(self, on):
+        if self.drop is not None:
+            try:
+                self.drop.highlight(on)
+            except tk.TclError:
+                pass
 
     def make_tile(self, parent, src, dst):
         conv = registry.get(src, dst, self.app.engines)
@@ -152,11 +162,13 @@ class ConvertPage(ctk.CTkScrollableFrame):
             pin.place(relx=1.0, x=-6, y=6, anchor="ne")
 
         def enter():
-            tile.configure(fg_color=t.CARD_SEL, border_color=t.BORDER_BTN)
+            tile.configure(border_color=t.BORDER_BTN)
+            motion.fade_color(tile, f"tile-{id(tile)}", "fg_color", t.CARD, t.CARD_SEL, 120)
             pin.place(relx=1.0, x=-6, y=6, anchor="ne")
 
         def leave():
-            tile.configure(fg_color=t.CARD, border_color=t.BORDER)
+            tile.configure(border_color=t.BORDER)
+            motion.fade_color(tile, f"tile-{id(tile)}", "fg_color", t.CARD_SEL, t.CARD, 160)
             if not stats.is_pinned(src, dst):
                 pin.place_forget()
 
@@ -175,7 +187,7 @@ class ConvertPage(ctk.CTkScrollableFrame):
         conv = registry.get(src, dst)
         need = conv.engine_label if conv else "движок"
         Popover(widget, f"Для {src.upper()} в {dst.upper()} нужен {need}. Он не найден на компьютере.\n"
-                        "Подробности в нижней панели ДВИЖКИ.", below=True)
+                        "Подробности в разделе «Движки» справа вверху.", below=True)
 
     def toggle_pin(self, src, dst):
         self.app.stats.toggle_pin(src, dst)
@@ -211,10 +223,12 @@ class ConvertPage(ctk.CTkScrollableFrame):
         self.load_props(item)
 
         if not targets:
-            msg = "Для этого типа файла нет доступных конвертаций."
+            title_text, msg = "Нет доступных конвертаций", "Для этого типа файла не найден подходящий движок."
             if not registry.accepts(ext):
-                msg = f"Формат {ext.upper() or 'без расширения'} не поддерживается."
-            label(b, msg, 14, t.MUTED).pack(anchor="w", pady=30)
+                title_text = f"Формат {ext.upper() or 'без расширения'} не поддерживается"
+                msg = "Посмотрите список всех поддерживаемых конвертаций."
+            empty_state(b, "file-search", title_text, msg, ("Все конвертации", self.app.show_all_conversions)).pack(
+                pady=36)
             self.quick_actions(b, item)
             return
 
@@ -236,7 +250,7 @@ class ConvertPage(ctk.CTkScrollableFrame):
         self.tabs.pack(fill="x")
         self.cards_frame = holder(b)
         self.cards_frame.pack(fill="x", pady=(12, 0))
-        self.note = label(b, "", 12, t.ACCENT, justify="left", wraplength=600)
+        self.note = label(b, "", 12, t.ACCENT_TEXT, justify="left", wraplength=600)
         self.scan_row = holder(b)
         self.scan_row.pack(fill="x")
         self.show_category(category(best))
@@ -368,7 +382,7 @@ class ConvertPage(ctk.CTkScrollableFrame):
             card.configure(fg_color=t.ACCENT if on else t.CARD, border_color=t.ACCENT if on else t.BORDER)
             code.configure(text_color=t.ON_ACCENT if on else t.TEXT)
             name.configure(text_color=t.ON_ACCENT if on else t.CAPTION)
-            eng.configure(text_color="#4A3B1E" if on else t.MUTED)
+            eng.configure(text_color=t.ON_ACCENT_DIM if on else t.MUTED)
             if badge is not None:
                 badge.configure(fg_color=t.ON_ACCENT if on else t.ACCENT, text_color=t.ACCENT if on else t.ON_ACCENT)
         conv = self.current_conv()
@@ -416,7 +430,7 @@ class ConvertPage(ctk.CTkScrollableFrame):
             if extra > 0:
                 text += f" +{extra}"
             row.add(outline_button(row, text, lambda: self.app.show_section(section), size=12, border=t.ACCENT,
-                                   color=t.ACCENT, width=40))
+                                   color=t.ACCENT_TEXT, width=40))
 
     def params_block(self, parent):
         box = ctk.CTkFrame(parent, fg_color=t.CARD, corner_radius=t.RADIUS, border_width=1, border_color=t.BORDER)

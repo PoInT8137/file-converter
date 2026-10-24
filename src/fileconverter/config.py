@@ -50,6 +50,8 @@ DEFAULTS = {
     "libreoffice_path": "",
     "tesseract_path": "",
     "params_open": False,
+    "theme": "system",
+    "animations": True,
 }
 
 QUALITY_NAMES = {"high": "высокое", "medium": "среднее", "low": "низкое"}

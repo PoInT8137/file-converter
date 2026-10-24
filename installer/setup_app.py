@@ -137,6 +137,7 @@ class Wizard(ctk.CTk):
     def __init__(self, mode):
         ctk.set_appearance_mode("dark")
         super().__init__(fg_color=t.MAIN)
+        t.conceal(self)
         t.load_fonts()
         self.mode = mode
         self.title(f"Установка {APP}" if mode == "install" else f"Удаление {APP}")

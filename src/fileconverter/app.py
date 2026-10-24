@@ -19,13 +19,16 @@ from .jobs import JobQueue
 from .registry import FORMATS, ALIASES, registry, title
 from .stats import History, Stats
 from .tools import SECTION_TITLES, TOOLS, TOOLS_BY_ID
+from .osutils import show_in_folder
+from .ui import motion
 from .ui import theme as t
 from .ui.convert_page import ConvertPage
 from .ui.other_pages import AllConversions, HistoryPage, SettingsPage
+from .ui.overlays import CommandPalette, EnginesPanel, Overlay
 from .ui.queue_panel import QueuePanel
 from .ui.tools_page import ToolsPage
-from .ui.widgets import (Dot, on_event, FieldsDialog, Flow, Popover, ask_yes_no, caption, checkbox, entry, label, make_clickable, message,
-                         mono_label, outline_button, segmented, separator)
+from .ui.widgets import (Dot, on_event, FieldsDialog, Flow, Popover, Toasts, ask_yes_no, caption, checkbox, entry,
+                         mono_label, message, outline_button, segmented, separator)
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -46,6 +49,13 @@ SECTIONS = [
     ("settings", "Настройки", "settings"),
 ]
 SECTION_NAMES = {s[0]: s[1] for s in SECTIONS if s}
+# Ctrl+1 ... Ctrl+7 в порядке разделов
+HOTKEYS = {key: str(n) for n, key in enumerate(SECTION_NAMES, 1)}
+GROUPS = {"convert": "ФАЙЛЫ", "pdf": "ИНСТРУМЕНТЫ"}
+# окно уже этой ширины (в логических пикселях): меню только значками, очередь уже
+COMPACT_WIDTH = 1120
+SIDE_WIDE, SIDE_COMPACT = 200, 60
+QUEUE_WIDE, QUEUE_COMPACT = 290, 250
 QUALITY = [("high", "Высокое"), ("medium", "Среднее"), ("low", "Низкое")]
 
 
@@ -56,9 +66,13 @@ def file_patterns(ext):
 
 class App(ctk.CTk, DND_BASE):
     def __init__(self, selftest=False):
-        ctk.set_appearance_mode("dark")
+        self.settings = Settings()
+        t.apply_theme(self.settings.get("theme"))
         super().__init__(fg_color=t.BG)
+        t.conceal(self)
         self.selftest = selftest
+        # в самопроверке и тестах всё синхронно: анимации меняют порядок событий
+        motion.enabled = bool(self.settings.get("animations")) and not selftest
         self.errors = []
         self.error_shown = False
         self.dnd_ok = False
@@ -80,7 +94,6 @@ class App(ctk.CTk, DND_BASE):
         except Exception:
             pass
 
-        self.settings = Settings()
         self.stats = Stats()
         self.history = History()
         self.engines = Engines(self.settings)
@@ -89,7 +102,8 @@ class App(ctk.CTk, DND_BASE):
         self.ui_calls = queue.Queue()
         self.pages = {}
         self.current = None
-        self.search_popup = None
+        self.current_key = None
+        self.compact = None
 
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -98,8 +112,8 @@ class App(ctk.CTk, DND_BASE):
         self.body.grid(row=1, column=0, sticky="nsew")
         self.body.grid_rowconfigure(0, weight=1)
         self.body.grid_columnconfigure(4, weight=1)
-        self.body.grid_columnconfigure(0, minsize=200)
-        self.body.grid_columnconfigure(2, minsize=290)
+        self.body.grid_columnconfigure(0, minsize=SIDE_WIDE)
+        self.body.grid_columnconfigure(2, minsize=QUEUE_WIDE)
         self.build_sidebar()
         separator(self.body, vertical=True).grid(row=0, column=1, sticky="ns")
         self.queue_panel = QueuePanel(self)
@@ -109,16 +123,23 @@ class App(ctk.CTk, DND_BASE):
         self.content.grid(row=0, column=4, sticky="nsew")
         self.content.grid_rowconfigure(0, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
-        self.build_engines_bar()
+        self.transition = motion.PageTransition(self.content)
+        self.palette = CommandPalette(self)
+        # поле палитры: Ctrl+K ставит фокус сюда
+        self.search = self.palette.entry
+        self.engines_panel = EnginesPanel(self, self.engines_button)
+        self.toasts = Toasts(self)
+        self.update_engines_status()
 
         if self.dnd_ok:
-            self.register_drop(self, self.add_files)
+            self.register_drop(self, self.add_files, self.on_drag)
         self.bind_all("<Control-KeyPress>", self.on_ctrl_key)
         # у полей ввода Tk своя комбинация Ctrl+K "удалить до конца строки", она срабатывает раньше bind_all
         for cls in ("Entry", "Text"):
             self.bind_class(cls, "<Control-Key-k>", self.on_ctrl_key)
             self.bind_class(cls, "<Control-Key-K>", self.on_ctrl_key)
         self.bind("<Escape>", on_event(lambda e: self.close_search()))
+        self.bind("<Configure>", self.on_resize, add="+")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.show_section("convert")
         self.after(80, self.poll)
@@ -140,10 +161,27 @@ class App(ctk.CTk, DND_BASE):
         # запас на рамку и заголовок окна
         w = max(600, min(1180, int(width / scale) - 16))
         h = max(400, min(760, int((height - 40) / scale)))
-        self.minsize(min(1000, w), min(640, h))
+        self.minsize(min(940, w), min(600, h))
         x = left + max(0, int((width - w * scale) / 2))
         y = top + max(0, int((height - 40 - h * scale) / 2))
         self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _windows_set_titlebar_color(self, color_mode):
+        """Цвет заголовка окна под тему без скрытия окна.
+
+        CustomTkinter для этого прячет и снова показывает окно, при смене темы окно мигает.
+        """
+        if not self._window_exists:
+            return super()._windows_set_titlebar_color(color_mode)
+        value = ctypes.c_int(1 if color_mode.lower() == "dark" else 0)
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), ctypes.sizeof(value)) != 0:
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(value), ctypes.sizeof(value))
+            # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+        except Exception:
+            pass
 
     def report_callback_exception(self, exc, val, tb):
         text = "".join(traceback.format_exception(exc, val, tb))
@@ -167,77 +205,143 @@ class App(ctk.CTk, DND_BASE):
             self.after(50, show)
 
     def build_header(self):
-        head = ctk.CTkFrame(self, fg_color=t.BAR, corner_radius=0, height=60)
+        head = ctk.CTkFrame(self, fg_color=t.BAR, corner_radius=0, height=56)
         head.grid(row=0, column=0, sticky="ew")
         head.grid_propagate(False)
+        head.grid_rowconfigure(0, weight=1)
         head.grid_columnconfigure(1, weight=1)
         logo = ctk.CTkFrame(head, fg_color=t.BAR)
-        logo.grid(row=0, column=0, padx=18, pady=12, sticky="w")
-        ctk.CTkLabel(logo, text="", image=t.ui_icon("arrow-left-right", "accent", 24)).pack(side="left")
-        ctk.CTkLabel(logo, text="FILE CONVERTER", font=t.mono(15, "bold"), text_color=t.TEXT).pack(side="left", padx=10)
+        logo.grid(row=0, column=0, padx=18, sticky="w")
+        ctk.CTkLabel(logo, text="", image=t.ui_icon("arrow-left-right", "accent", 22)).pack(side="left")
+        ctk.CTkLabel(logo, text="FILE CONVERTER", font=t.mono(14, "bold"), text_color=t.TEXT).pack(side="left", padx=10)
 
-        box = ctk.CTkFrame(head, fg_color=t.BAR)
-        box.grid(row=0, column=2, padx=18, sticky="e")
-        self.search = entry(box, "Найти функцию или формат", width=360)
-        self.search.configure(height=40)
-        self.search.pack()
-        ctk.CTkLabel(self.search, text="", image=t.ui_icon("search", "muted", 16), fg_color=t.BAR).place(
-            relx=1.0, x=-70, rely=0.5, anchor="e")
-        hint = ctk.CTkLabel(self.search, text="Ctrl K", font=t.mono(10, "bold"), text_color=t.MUTED,
-                            fg_color=t.CARD, corner_radius=4, height=20, width=48)
-        hint.place(relx=1.0, x=-10, rely=0.5, anchor="e")
-        self.search.bind("<KeyRelease>", self.on_search_key)
-        self.search.bind("<Return>", on_event(lambda e: self.search_pick(0)))
-        self.search.bind("<Down>", on_event(lambda e: self.search_focus_first()))
-        self.search.bind("<FocusOut>", on_event(lambda e: self.after(200, self.maybe_close_search)))
+        # поле поиска в шапке только открывает палитру команд
+        self.search_button = ctk.CTkButton(
+            head, text="  Найти функцию или формат", anchor="w", width=340, height=36, corner_radius=t.RADIUS,
+            fg_color=t.MAIN, hover_color=t.CARD, border_width=1, border_color=t.BORDER_BTN, text_color=t.MUTED,
+            font=t.font(13), image=t.ui_icon("search", "muted", 16), compound="left",
+            command=lambda: self.palette.toggle())
+        self.search_button.grid(row=0, column=2, padx=(0, 10), sticky="e")
+        mono_label(self.search_button, "Ctrl K", 10, t.MUTED, fg_color=t.CARD_SEL, corner_radius=4, height=20,
+                   width=48).place(relx=1.0, x=-8, rely=0.5, anchor="e")
+
+        self.engines_button = ctk.CTkButton(
+            head, text="", width=40, height=36, corner_radius=t.RADIUS, fg_color="transparent",
+            hover_color=t.CARD, border_width=1, border_color=t.BORDER, text_color=t.CAPTION, font=t.mono(11),
+            command=lambda: self.engines_panel.toggle())
+        self.engines_button.grid(row=0, column=3, padx=(0, 18), sticky="e")
         separator(self).grid(row=0, column=0, sticky="sew")
 
     def build_sidebar(self):
-        side = ctk.CTkFrame(self.body, fg_color=t.BAR, corner_radius=0, width=200)
+        side = ctk.CTkFrame(self.body, fg_color=t.BAR, corner_radius=0, width=SIDE_WIDE)
         side.grid(row=0, column=0, sticky="nsew")
         side.grid_propagate(False)
+        side.pack_propagate(False)
+        self.side = side
         self.nav = {}
-        caption(side, "РАЗДЕЛЫ", color=t.MUTED, size=10).pack(anchor="w", padx=20, pady=(16, 6))
-        for s in SECTIONS:
-            if s is None:
-                separator(side).pack(fill="x", padx=16, pady=10)
-                continue
-            key, text, icon = s
-            btn = ctk.CTkButton(side, text=text, anchor="w", height=t.H, corner_radius=t.RADIUS,
-                                fg_color="transparent", hover_color=t.CARD, text_color=t.MUTED, font=t.font(13),
-                                image=t.ui_icon(icon, "muted", 18), compound="left",
-                                command=lambda k=key: self.show_section(k))
-            btn.pack(fill="x", padx=10, pady=1)
-            self.nav[key] = (btn, icon)
+        self.nav_captions = []
+        bottom = [s for s in SECTIONS[SECTIONS.index(None) + 1:]]
+        for s in SECTIONS[:SECTIONS.index(None)]:
+            if s[0] in GROUPS:
+                cap = caption(side, GROUPS[s[0]], color=t.MUTED, size=10)
+                cap.pack(anchor="w", padx=20, pady=(16 if s[0] == "convert" else 14, 6))
+                self.nav_captions.append((cap, GROUPS[s[0]]))
+            self.nav_button(side, s).pack(fill="x", padx=10, pady=1)
+        for s in reversed(bottom):
+            self.nav_button(side, s).pack(side="bottom", fill="x", padx=10, pady=1)
+        separator(side).pack(side="bottom", fill="x", padx=16, pady=8)
+        # янтарная полоска у активного раздела, переезжает к выбранному пункту
+        self.marker = ctk.CTkFrame(side, fg_color=t.ACCENT, corner_radius=2, width=3, height=20)
+        self.marker_y = None
+        side.bind("<Configure>", on_event(lambda e: self.after_idle(lambda: self.move_marker(False))), add="+")
 
-    def build_engines_bar(self):
-        if hasattr(self, "engines_bar"):
-            self.engines_bar.destroy()
-        bar = ctk.CTkFrame(self, fg_color=t.BAR, corner_radius=0, height=t.H)
-        bar.grid(row=2, column=0, sticky="ew")
-        bar.pack_propagate(False)
-        self.engines_bar = bar
-        separator(bar).place(x=0, y=0, relwidth=1)
-        caption(bar, "ДВИЖКИ", color=t.MUTED, size=10).pack(side="left", padx=(20, 14))
-        for name, text, ok in self.engines.status():
-            cell = ctk.CTkFrame(bar, fg_color=t.BAR, corner_radius=t.RADIUS, height=36)
-            cell.pack(side="left", padx=2, pady=4)
-            Dot(cell, t.SUCCESS if ok else t.ERROR, t.BAR).pack(side="left", padx=(10, 6))
-            mono_label(cell, text, 11, t.CAPTION if ok else t.MUTED).pack(side="left", padx=(0, 10))
-            make_clickable(cell, lambda n=name, c=cell: Popover(c, self.engines.describe(n)),
-                           lambda c=cell: c.configure(fg_color=t.CARD), lambda c=cell: c.configure(fg_color=t.BAR))
-        mono_label(bar, f"v{__version__}", 11).pack(side="right", padx=20)
-        if not self.dnd_ok:
-            mono_label(bar, "перетаскивание недоступно", 10, t.ERROR).pack(side="right", padx=10)
+    def nav_button(self, side, s):
+        key, text, icon = s
+        btn = ctk.CTkButton(side, text=text, anchor="w", height=t.H - 4, corner_radius=t.RADIUS,
+                            fg_color="transparent", hover_color=t.CARD, text_color=t.MUTED, font=t.font(13),
+                            image=t.ui_icon(icon, "muted", 18), compound="left",
+                            command=lambda k=key: self.show_section(k))
+        self.nav[key] = (btn, icon)
+        state = {"job": None}
+
+        def enter(_e):
+            # подсказка с клавишей появляется, только если задержать курсор
+            state["job"] = btn.after(700, lambda: Popover(btn, f"{text}    Ctrl+{HOTKEYS[key]}", below=True,
+                                                          timeout=1800) if btn.winfo_exists() else None)
+
+        def leave(_e):
+            if state["job"]:
+                btn.after_cancel(state["job"])
+                state["job"] = None
+
+        btn.bind("<Enter>", enter, add="+")
+        btn.bind("<Leave>", leave, add="+")
+        btn.bind("<ButtonPress-1>", leave, add="+")
+        return btn
+
+    def move_marker(self, animate=True):
+        if self.current_key not in self.nav:
+            return
+        btn = self.nav[self.current_key][0]
+        try:
+            scale = ctk.ScalingTracker.get_widget_scaling(self.side)
+            y = (btn.winfo_y() + btn.winfo_height() / 2) / scale - 10
+        except Exception:
+            return
+        if btn.winfo_height() <= 1:
+            return
+        start = self.marker_y
+        self.marker_y = y
+        if not animate or start is None or start == y:
+            self.marker.place(x=4, y=y)
+            return
+
+        def step(p):
+            self.marker.place(x=4, y=start + (y - start) * p)
+
+        motion.run(self.marker, "nav-marker", 200, step)
+
+    def on_resize(self, event):
+        if event.widget is not self:
+            return
+        scale = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        self.set_compact(event.width / scale < COMPACT_WIDTH)
+
+    def set_compact(self, compact):
+        """Узкое окно: меню только значками, очередь уже. Подсказки с названием раздела остаются."""
+        if compact == self.compact:
+            return
+        self.compact = compact
+        side_w = SIDE_COMPACT if compact else SIDE_WIDE
+        self.side.configure(width=side_w)
+        self.body.grid_columnconfigure(0, minsize=side_w)
+        self.body.grid_columnconfigure(2, minsize=QUEUE_COMPACT if compact else QUEUE_WIDE)
+        self.queue_panel.configure(width=QUEUE_COMPACT if compact else QUEUE_WIDE)
+        for key, (btn, icon) in self.nav.items():
+            btn.configure(text="" if compact else SECTION_NAMES[key], anchor="center" if compact else "w")
+        for cap, text in self.nav_captions:
+            cap.configure(text="" if compact else text)
+        self.after_idle(lambda: self.move_marker(False))
+
+    def update_engines_status(self):
+        status = self.engines.status()
+        found = sum(1 for _, _, ok in status if ok)
+        good = found == len(status) and self.dnd_ok
+        btn = self.engines_button
+        btn.configure(text=f"   Движки {found}/{len(status)}", width=40)
+        if not hasattr(self, "engines_dot"):
+            self.engines_dot = Dot(btn, t.SUCCESS, t.BAR)
+            self.engines_dot.place(x=12, rely=0.5, anchor="w")
+        self.engines_dot.set(t.SUCCESS if good else t.ACCENT)
 
     def show_section(self, key):
         self.close_search()
+        previous = self.current_key
         for k, (btn, icon) in self.nav.items():
             on = k == key
             btn.configure(fg_color=t.CARD_SEL if on else "transparent", text_color=t.TEXT if on else t.MUTED,
                           image=t.ui_icon(icon, "accent" if on else "muted", 18))
-        if self.current is not None:
-            self.current.grid_remove()
+        old = self.current
         page = self.pages.get(key)
         if page is None:
             if key == "convert":
@@ -257,9 +361,14 @@ class App(ctk.CTk, DND_BASE):
             sel = self.queue_panel.selected
             if len(sel) == 1 and page.item is not sel[0]:
                 page.show_file(sel[0])
-        page.grid(row=0, column=0, sticky="nsew")
         self.current = page
         self.current_key = key
+        if page is old:
+            self.transition.finish()
+            page.grid(row=0, column=0, sticky="nsew")
+        else:
+            self.transition.start(old, page, lambda p: p.grid(row=0, column=0, sticky="nsew"))
+        self.move_marker(animate=previous is not None)
 
     def go_home(self):
         self.queue_panel.select([])
@@ -283,11 +392,13 @@ class App(ctk.CTk, DND_BASE):
         elif self.current_key in ("history", "settings") and len(sel) == 1:
             self.show_section("convert")
 
-    def register_drop(self, widget, func):
+    def register_drop(self, widget, func, on_drag=None):
         if not self.dnd_ok:
             return
 
         def handler(event):
+            if on_drag:
+                on_drag(False)
             try:
                 paths = [p for p in self.tk.splitlist(event.data) if p]
             except Exception:
@@ -296,11 +407,26 @@ class App(ctk.CTk, DND_BASE):
                 self.after(10, lambda: func(paths))
             return event.action
 
+        def drag(on):
+            def f(event):
+                on_drag(on)
+                return event.action
+            return f
+
         try:
             widget.drop_target_register(DND_FILES)
             widget.dnd_bind("<<Drop>>", handler)
+            if on_drag:
+                widget.dnd_bind("<<DropEnter>>", drag(True))
+                widget.dnd_bind("<<DropLeave>>", drag(False))
         except Exception:
             pass
+
+    def on_drag(self, on):
+        """Файлы несут над окном: зона перетаскивания на главной подсвечивается."""
+        page = self.pages.get("convert")
+        if page is not None:
+            page.highlight_drop(on and self.current is page)
 
     def add_files(self, paths):
         files = []
@@ -362,9 +488,8 @@ class App(ctk.CTk, DND_BASE):
             started += 1
         if skipped and (not batch or not started):
             names = ", ".join(skipped[:5]) + (" и другие" if len(skipped) > 5 else "")
-            message(self, "Конвертация недоступна",
-                    f"Нельзя конвертировать в {dst.upper()}: {names}. Нет подходящего движка или формат не поддерживается.",
-                    "error")
+            self.toasts.show(f"Нельзя конвертировать в {dst.upper()}: {names}. Нет подходящего движка "
+                             "или формат не поддерживается.", "error", timeout=7000)
         return started
 
     def run_tool(self, tool, items):
@@ -474,7 +599,7 @@ class App(ctk.CTk, DND_BASE):
 
     def rescan_engines(self):
         self.engines.refresh()
-        self.build_engines_bar()
+        self.update_engines_status()
         for key in list(self.pages):
             if key not in ("settings", self.current_key):
                 self.pages.pop(key).destroy()
@@ -540,14 +665,53 @@ class App(ctk.CTk, DND_BASE):
                     page.show_log(job)
         if kind == "done":
             self.refresh_home()
+            if not self.selftest:
+                self.notify_done(job, items)
+
+    def notify_done(self, job, items):
+        """Сообщение в углу окна о готовом результате или ошибке. Несколько готовых подряд собираются в одно."""
+        if job.status == "done" and job.outputs:
+            first = job.outputs[0]
+            recent = getattr(self, "done_toast", None)
+            if recent is not None and recent[0] in self.toasts.items and time.time() - recent[2] < 3:
+                toast, count = recent[0], recent[1] + 1
+                toast.text.configure(text=f"Готово файлов: {count}")
+                self.done_toast = (toast, count, time.time())
+                return
+            toast = self.toasts.show(f"Готово: {first.name}", "ok", ("Показать в папке", lambda: show_in_folder(first)))
+            self.done_toast = (toast, 1, time.time())
+        elif job.status == "error":
+            name = items[0].path.name if items else "файл"
+
+            def open_item():
+                if items and items[0] in self.queue_panel.items:
+                    self.queue_panel.click(items[0])
+                    if self.current_key != "convert" and job.tool is None:
+                        self.show_section("convert")
+
+            self.toasts.show(f"Не получилось: {name}. {job.error or ''}".strip(), "error",
+                             ("Подробности", open_item), timeout=7000)
 
     def on_ctrl_key(self, event):
-        # 75 это клавиша K в любой раскладке
+        # коды клавиш не зависят от раскладки: 75 это K, 79 это O, 49..55 это цифры 1..7
         if event.keycode == 75:
-            self.search.focus_set()
-            self.search.select_range(0, "end")
+            self.palette.open()
+            return "break"
+        if event.keycode == 79:
+            self.pick_files()
+            return "break"
+        if 49 <= event.keycode < 49 + len(SECTION_NAMES):
+            self.show_section(list(SECTION_NAMES)[event.keycode - 49])
             return "break"
         return None
+
+    def default_commands(self):
+        """Палитра без запроса: разделы с клавишами и частые действия."""
+        items = [("Ctrl O", "Добавить файлы", self.pick_files),
+                 ("СПИСОК", "Все конвертации", self.show_all_conversions)]
+        for key, name in SECTION_NAMES.items():
+            items.append((f"Ctrl {HOTKEYS[key]}", name, lambda k=key: self.show_section(k)))
+        return items
 
     def search_items(self, text):
         q = text.lower().strip().replace(" в ", " ")
@@ -573,72 +737,17 @@ class App(ctk.CTk, DND_BASE):
             results.append(("ФОРМАТ", f"Все конвертации {ext.upper()}", self.show_all_conversions))
         return results[:9]
 
-    def on_search_key(self, event):
-        if event.keysym in ("Return", "Down", "Up", "Escape") or event.keysym.startswith("Control"):
-            if event.keysym == "Escape":
-                self.close_search()
-            return
-        self.update_search()
-
-    def update_search(self):
-        results = self.search_items(self.search.get())
-        self.close_search()
-        if not self.search.get().strip():
-            return
-        pop = ctk.CTkToplevel(self)
-        pop.withdraw()
-        pop.overrideredirect(True)
-        pop.configure(fg_color=t.BORDER_BTN)
-        pop.attributes("-topmost", True)
-        inner = ctk.CTkFrame(pop, fg_color=t.CARD, corner_radius=0)
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
-        self.search_results = results
-        self.search_buttons = []
-        if not results:
-            mono_label(inner, "Ничего не найдено", 12).pack(padx=16, pady=12, anchor="w")
-        for i, (kind, text, _) in enumerate(results):
-            row = ctk.CTkButton(inner, text=f"{text}", anchor="w", height=t.H, corner_radius=0, fg_color=t.CARD,
-                                hover_color=t.CARD_SEL, text_color=t.TEXT, font=t.font(13),
-                                command=lambda n=i: self.search_pick(n))
-            row.pack(fill="x")
-            mono_label(row, kind, 9).place(relx=1.0, x=-10, rely=0.5, anchor="e")
-            row.bind("<Return>", on_event(lambda e, n=i: self.search_pick(n)))
-            self.search_buttons.append(row)
-        pop.update_idletasks()
-        x = self.search.winfo_rootx()
-        y = self.search.winfo_rooty() + self.search.winfo_height() + 4
-        w = self.search.winfo_width()
-        pop.geometry(f"{w}x{pop.winfo_reqheight()}+{x}+{y}")
-        pop.deiconify()
-        self.search_popup = pop
-
-    def search_focus_first(self):
-        if getattr(self, "search_buttons", None):
-            self.search_buttons[0].focus_set()
-
-    def search_pick(self, n):
-        results = getattr(self, "search_results", [])
-        if n < len(results):
-            action = results[n][2]
-            self.search.delete(0, "end")
-            self.close_search()
-            self.focus_set()
-            self.after(20, action)
-
-    def maybe_close_search(self):
-        focus = self.focus_get()
-        if self.search_popup is not None and focus is not None and str(focus).startswith(str(self.search_popup)):
-            return
-        if focus is not self.search and (focus is None or not str(focus).startswith(str(self.search))):
-            self.close_search()
-
     def close_search(self):
-        if self.search_popup is not None:
-            try:
-                self.search_popup.destroy()
-            except Exception:
-                pass
-            self.search_popup = None
+        if Overlay.current is not None:
+            Overlay.current.close()
+
+    def set_theme(self, name):
+        self.settings.set("theme", name)
+        t.apply_theme(name)
+
+    def set_animations(self, on):
+        self.settings.set("animations", bool(on))
+        motion.enabled = bool(on) and not self.selftest
 
     def open_tool(self, tool):
         self.show_section(tool.section)
@@ -652,6 +761,7 @@ class App(ctk.CTk, DND_BASE):
             if not ask_yes_no(self, "Закрыть File Converter", text, "Остановить и закрыть"):
                 return
         self.jobs.shutdown()
+        self.transition.finish()
         self.destroy()
         gc.collect()
         gc.enable()
@@ -795,7 +905,6 @@ def main(argv=None):
             return 2
         out_dir = argv[argv.index("--out") + 1] if "--out" in argv else ""
         return run_cli_convert(src, dst, out_dir)
-    ctk.set_appearance_mode("dark")
     app = App()
     files = [a for a in argv if not a.startswith("--") and Path(a).exists()]
     if files:

@@ -10,6 +10,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 os.environ["FILECONVERTER_DATA"] = tempfile.mkdtemp(prefix="fc_test_data_")
+# окна тестов прозрачные; чтобы посмотреть на них, запустите с FILECONVERTER_HIDDEN=0
+os.environ.setdefault("FILECONVERTER_HIDDEN", "1")
 
 DATA = ROOT / "tests" / "data"
 # пробелы и кириллица в пути специально

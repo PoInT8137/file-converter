@@ -136,7 +136,9 @@ def test_ctrl_k_keeps_entry_text(app):
     e._entry.event_generate("<Control-Key-k>", keycode=75)
     pump(app, 0.2)
     assert e.get() == "abcdef"
-    assert app.focus_get() == app.search._entry
+    # focus_lastfor, а не focus_get: прозрачное окно тестов может не быть активным окном Windows
+    assert app.focus_lastfor() == app.search._entry
+    app.close_search()
 
 
 def test_settings_rescan_and_refresh(app):
@@ -152,7 +154,8 @@ def test_settings_rescan_and_refresh(app):
     app.show_section("settings")
     pump(app, 0.2)
     from fileconverter.ui.widgets import walk
-    boxes = [w for w in walk(app.pages["settings"]) if isinstance(w, ctk.CTkCheckBox)]
+    boxes = [w for w in walk(app.pages["settings"]) if isinstance(w, ctk.CTkCheckBox)
+             and w.cget("text").startswith("Открывать результат")]
     assert boxes[0].get() == 1
 
 

@@ -8,8 +8,8 @@ from ..config import data_dir
 from ..osutils import open_path, show_in_folder
 from ..registry import CATEGORIES, category, registry, title
 from . import theme as t
-from .widgets import (Dialog, Popover, on_event, accent_button, ask_yes_no, caption, entry, label, make_clickable, message,
-                      mono_label, outline_button, separator)
+from .widgets import (Dialog, Popover, on_event, accent_button, ask_yes_no, caption, checkbox, empty_state, entry, label,
+                      make_clickable, message, mono_label, outline_button, segmented, separator)
 
 STATUS = {"done": ("ГОТОВО", t.SUCCESS), "error": ("ОШИБКА", t.ERROR)}
 
@@ -60,7 +60,8 @@ class HistoryPage(Page):
         for c, text in enumerate(["ИСХОДНЫЙ ФАЙЛ", "РЕЗУЛЬТАТ"]):
             caption(table, text, size=10).grid(row=0, column=c, sticky="w", padx=12, pady=(10, 6))
         if not items:
-            mono_label(table, "История пуста", 12).grid(row=1, column=0, columnspan=4, pady=24)
+            empty_state(table, "rotate-ccw-clock", "История пуста",
+                        "Здесь появятся конвертации и их результаты.").grid(row=1, column=0, columnspan=4, pady=28)
         self.table = table
         self.shown = 0
         self.more = None
@@ -141,7 +142,20 @@ class SettingsPage(Page):
         label(b, "Настройки", 22, weight="bold").pack(anchor="w")
         label(b, "Изменения сохраняются сразу.", 13, t.MUTED).pack(anchor="w", pady=(2, 14))
 
-        caption(b, "РЕЗУЛЬТАТ И ПОВЕДЕНИЕ").pack(anchor="w", pady=(6, 8))
+        caption(b, "ОФОРМЛЕНИЕ").pack(anchor="w", pady=(6, 8))
+        box = self.card(b)
+        caption(box, "ТЕМА", color=t.MUTED, size=10).pack(anchor="w", pady=(0, 4))
+        names = dict(t.THEMES)
+        theme = ctk.StringVar(value=names.get(self.app.settings.get("theme"), names["system"]))
+        segmented(box, [n for _, n in t.THEMES], theme,
+                  lambda v: self.app.set_theme({n: k for k, n in t.THEMES}[v])).pack(anchor="w")
+        anim = ctk.BooleanVar(value=bool(self.app.settings.get("animations")))
+        checkbox(box, "Анимации интерфейса", anim, lambda: self.app.set_animations(anim.get())).pack(
+            anchor="w", pady=(8, 0))
+        mono_label(box, "Плавные переходы между разделами. Отключаются сами, если компьютер не успевает.", 11,
+                   wraplength=420, justify="left").pack(anchor="w")
+
+        caption(b, "РЕЗУЛЬТАТ И ПОВЕДЕНИЕ").pack(anchor="w", pady=(20, 8))
         box = self.card(b)
         self.app.build_params(box)
 
@@ -176,6 +190,13 @@ class SettingsPage(Page):
         row.pack(fill="x")
         mono_label(row, str(data_dir()), 11, wraplength=420, justify="left").pack(anchor="w")
         outline_button(row, "Открыть папку", lambda: open_path(data_dir()), width=140, size=12).pack(anchor="w", pady=(8, 0))
+
+        from .. import __version__
+        caption(b, "О ПРОГРАММЕ").pack(anchor="w", pady=(20, 8))
+        box = self.card(b)
+        label(box, f"File Converter {__version__}", 13, weight="bold").pack(anchor="w")
+        mono_label(box, "Ctrl K поиск   Ctrl O добавить файлы   Ctrl 1-7 разделы", 11, wraplength=420,
+                   justify="left").pack(anchor="w", pady=(4, 0))
 
     def card(self, parent):
         outer = ctk.CTkFrame(parent, fg_color=t.CARD, corner_radius=t.RADIUS, border_width=1, border_color=t.BORDER)

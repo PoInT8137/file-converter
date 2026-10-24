@@ -1,33 +1,47 @@
 import ctypes
+import os
+import tkinter as tk
 import tkinter.font as tkfont
 
 import customtkinter as ctk
+from customtkinter.windows.widgets.appearance_mode import AppearanceModeTracker
 from PIL import Image
 
 from ..config import assets_dir
 
-BG = "#0B0E12"
-MAIN = "#14181D"
-BAR = "#0F1318"
-QUEUE = "#12161B"
-CARD = "#1B2128"
-CARD_SEL = "#222A33"
-BORDER = "#2A323C"
-BORDER_BTN = "#3B4654"
-TEXT = "#E6EAF0"
-MUTED = "#9AA6B5"
-CAPTION = "#C5CDD8"
-ACCENT = "#F5A524"
-ACCENT_HOVER = "#FFB845"
-ON_ACCENT = "#14181D"
-SUCCESS = "#5BD38A"
-ERROR = "#F06A6A"
-DASH = "#5A6878"
+# цвета парами (светлая тема, тёмная тема): CustomTkinter сам берёт нужный и перекрашивает виджеты при смене темы
+BG = ("#ECEEF1", "#0B0E12")
+MAIN = ("#FFFFFF", "#14181D")
+BAR = ("#F5F6F8", "#0F1318")
+QUEUE = ("#F8F9FA", "#12161B")
+CARD = ("#F6F7F9", "#1B2128")
+CARD_SEL = ("#ECEEF2", "#222A33")
+BORDER = ("#E1E4E9", "#2A323C")
+BORDER_BTN = ("#C9CFD8", "#3B4654")
+TEXT = ("#161B22", "#E6EAF0")
+MUTED = ("#69727E", "#9AA6B5")
+CAPTION = ("#3A424D", "#C5CDD8")
+ACCENT = ("#F5A524", "#F5A524")
+ACCENT_HOVER = ("#E8960F", "#FFB845")
+# янтарный текст и значки на светлом фоне темнее, иначе не читаются
+ACCENT_TEXT = ("#A86400", "#F5A524")
+ON_ACCENT = ("#14181D", "#14181D")
+ON_ACCENT_DIM = ("#5C4513", "#4A3B1E")
+ON_ACCENT_DISABLED = ("#8A7650", "#6B5A3A")
+SUCCESS = ("#1F8A4C", "#5BD38A")
+ERROR = ("#CC3B3B", "#F06A6A")
+DASH = ("#AAB2BD", "#5A6878")
 RADIUS = 6
 H = 44
 
+ICON_COLORS = {"muted": MUTED, "accent": ACCENT_TEXT, "text": TEXT, "dark": ON_ACCENT}
+THEMES = [("system", "Как в системе"), ("light", "Светлая"), ("dark", "Тёмная")]
+
 SANS = "Segoe UI"
 MONO = "Consolas"
+
+# в тестах окна создаются полностью прозрачными: они отвечают на события, но не мешают на экране
+HIDDEN = os.environ.get("FILECONVERTER_HIDDEN") == "1"
 
 ICON_FILES = {
     "doc": "doc", "docx": "docx", "xls": "xls", "xlsx": "xlsx", "csv": "csv", "ppt": "ppt", "pptx": "pptx",
@@ -43,6 +57,29 @@ _ui = {}
 _fonts = {}
 # старые объекты не удаляем: их __del__ обращается к Tcl и не должен сработать в фоновом потоке
 _keep = []
+
+
+def conceal(window):
+    if HIDDEN:
+        try:
+            window.attributes("-alpha", 0.0)
+        except tk.TclError:
+            pass
+
+
+def is_dark():
+    return AppearanceModeTracker.get_mode() == 1
+
+
+def color(value):
+    """Один цвет для текущей темы: нужен обычным виджетам Tk, которые не понимают пары."""
+    if isinstance(value, (tuple, list)):
+        return value[1 if is_dark() else 0]
+    return value
+
+
+def apply_theme(name):
+    ctk.set_appearance_mode(name if name in ("light", "dark") else "system")
 
 
 def reset_cache():
@@ -115,16 +152,23 @@ def get_icon(ext, size=32):
     return _icons[key]
 
 
+def _tinted(alpha, hex_color):
+    img = Image.new("RGBA", alpha.size, hex_color)
+    img.putalpha(alpha)
+    return img
+
+
 def ui_icon(name, color="muted", size=20):
+    """Значок интерфейса. Цвет берётся из темы: из готового PNG нужна только форма (прозрачность)."""
     key = (name, color, size)
     if key in _ui:
         return _ui[key]
-    path = assets_dir() / "ui" / f"{name}_{color}.png"
     try:
-        img = Image.open(path).convert("RGBA")
+        alpha = Image.open(assets_dir() / "ui" / f"{name}_text.png").convert("RGBA").getchannel("A")
     except OSError:
-        img = Image.new("RGBA", (48, 48), (0, 0, 0, 0))
-    _ui[key] = ctk.CTkImage(light_image=img, dark_image=img, size=(size, size))
+        alpha = Image.new("L", (48, 48), 0)
+    light, dark = ICON_COLORS.get(color, MUTED)
+    _ui[key] = ctk.CTkImage(light_image=_tinted(alpha, light), dark_image=_tinted(alpha, dark), size=(size, size))
     return _ui[key]
 
 

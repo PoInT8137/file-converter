@@ -1,14 +1,16 @@
 import tkinter as tk
 
 import customtkinter as ctk
+from customtkinter.windows.widgets.appearance_mode import CTkAppearanceModeBaseClass
 
+from . import motion
 from . import theme as t
 
 
 def accent_button(parent, text, command=None, height=t.H, size=14, **kw):
     return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=t.RADIUS,
                          fg_color=t.ACCENT, hover_color=t.ACCENT_HOVER, text_color=t.ON_ACCENT,
-                         text_color_disabled="#6B5A3A", font=t.font(size, "bold"), **kw)
+                         text_color_disabled=t.ON_ACCENT_DISABLED, font=t.font(size, "bold"), **kw)
 
 
 def outline_button(parent, text, command=None, height=t.H, size=13, border=t.BORDER_BTN, color=t.TEXT, **kw):
@@ -258,14 +260,60 @@ def make_clickable(widget, on_click=None, on_enter=None, on_leave=None):
             pass
 
 
+class ThemedCanvas(tk.Canvas, CTkAppearanceModeBaseClass):
+    """Обычный tk.Canvas, который перекрашивается при смене темы. Цвета задаются парами, как у CTk."""
+
+    def __init__(self, parent, bg, **kw):
+        self.bg = bg
+        tk.Canvas.__init__(self, parent, bg=t.color(bg), highlightthickness=0, bd=0, **kw)
+        CTkAppearanceModeBaseClass.__init__(self)
+
+    def _set_appearance_mode(self, mode_string):
+        super()._set_appearance_mode(mode_string)
+        self.configure(bg=self._apply_appearance_mode(self.bg))
+        self.repaint()
+
+    def repaint(self):
+        pass
+
+    def destroy(self):
+        CTkAppearanceModeBaseClass.destroy(self)
+        tk.Canvas.destroy(self)
+
+
+class ThemedText(tk.Text, CTkAppearanceModeBaseClass):
+    """tk.Text с цветами из темы. colors: аргументы configure() парами цветов, tags: цвета тегов."""
+
+    def __init__(self, parent, colors, tags=None, **kw):
+        self.colors = colors
+        self.tags = tags or {}
+        tk.Text.__init__(self, parent, **kw)
+        CTkAppearanceModeBaseClass.__init__(self)
+        self.repaint()
+
+    def _set_appearance_mode(self, mode_string):
+        super()._set_appearance_mode(mode_string)
+        self.repaint()
+
+    def repaint(self):
+        self.configure(**{k: self._apply_appearance_mode(v) for k, v in self.colors.items()})
+        for tag, value in self.tags.items():
+            self.tag_config(tag, foreground=self._apply_appearance_mode(value))
+
+    def destroy(self):
+        CTkAppearanceModeBaseClass.destroy(self)
+        tk.Text.destroy(self)
+
+
 class DashedBox(ctk.CTkFrame):
-    """Рамка с пунктиром для зоны перетаскивания."""
+    """Рамка с пунктиром для зоны перетаскивания. При перетаскивании над окном рамка подсвечивается."""
 
     def __init__(self, parent, bg=t.MAIN, color=t.DASH, **kw):
         super().__init__(parent, fg_color=bg, corner_radius=0, **kw)
         self.color = color
         self.bg = bg
-        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.canvas = ThemedCanvas(self, bg)
+        self.canvas.repaint = self.redraw
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
         self.inner = ctk.CTkFrame(self, fg_color=bg, corner_radius=0)
         self.inner.place(relx=0.5, rely=0.5, anchor="center")
@@ -275,6 +323,13 @@ class DashedBox(ctk.CTkFrame):
         self.color = color
         self.redraw()
 
+    def highlight(self, on):
+        self.set_color(t.ACCENT if on else t.DASH)
+        fill = t.CARD if on else self.bg
+        self.canvas.bg = fill
+        self.canvas.configure(bg=t.color(fill))
+        self.inner.configure(fg_color=fill)
+
     def redraw(self, _e=None):
         c = self.canvas
         c.delete("all")
@@ -283,12 +338,13 @@ class DashedBox(ctk.CTkFrame):
             return
         r, p = 8, 1
         dash = (4, 4)
-        kw = {"fill": self.color, "dash": dash, "width": 1}
+        color = t.color(self.color)
+        kw = {"fill": color, "dash": dash, "width": 1}
         c.create_line(p + r, p, w - p - r, p, **kw)
         c.create_line(p + r, h - p - 1, w - p - r, h - p - 1, **kw)
         c.create_line(p, p + r, p, h - p - r, **kw)
         c.create_line(w - p - 1, p + r, w - p - 1, h - p - r, **kw)
-        akw = {"style": "arc", "outline": self.color, "width": 1}
+        akw = {"style": "arc", "outline": color, "width": 1}
         c.create_arc(p, p, p + 2 * r, p + 2 * r, start=90, extent=90, **akw)
         c.create_arc(w - p - 1 - 2 * r, p, w - p - 1, p + 2 * r, start=0, extent=90, **akw)
         c.create_arc(p, h - p - 1 - 2 * r, p + 2 * r, h - p - 1, start=180, extent=90, **akw)
@@ -323,22 +379,34 @@ class TabBar(ctk.CTkFrame):
     def select(self, key, notify=True):
         if key not in self.items:
             return
-        self.active = key
+        previous, self.active = self.active, key
         for k, (btn, line) in self.items.items():
             on = k == key
             btn.configure(text_color=t.TEXT if on else t.MUTED, font=t.font(13, "bold" if on else "normal"))
-            line.configure(fg_color=t.ACCENT if on else self.bg)
+            if notify and k in (previous, key) and previous is not None:
+                motion.fade_color(line, f"tab-{id(line)}", "fg_color", line.cget("fg_color"),
+                                  t.ACCENT if on else self.bg, 160)
+            else:
+                line.configure(fg_color=t.ACCENT if on else self.bg)
         if notify:
             self.command(key)
 
 
-class Dot(tk.Canvas):
+class Dot(ThemedCanvas):
     def __init__(self, parent, color, bg, size=8):
-        super().__init__(parent, width=size + 2, height=size + 2, bg=bg, highlightthickness=0, bd=0)
-        self.oval = self.create_oval(1, 1, size + 1, size + 1, fill=color, outline=color)
+        super().__init__(parent, bg, width=size + 2, height=size + 2)
+        self.size = size
+        self.color = color
+        self.oval = self.create_oval(1, 1, size + 1, size + 1)
+        self.repaint()
 
     def set(self, color):
-        self.itemconfigure(self.oval, fill=color, outline=color)
+        self.color = color
+        self.repaint()
+
+    def repaint(self):
+        c = t.color(self.color)
+        self.itemconfigure(self.oval, fill=c, outline=c)
 
 
 class Popover(ctk.CTkToplevel):
@@ -354,6 +422,7 @@ class Popover(ctk.CTkToplevel):
                 pass
         super().__init__(anchor)
         Popover.current = self
+        t.conceal(self)
         self.overrideredirect(True)
         self.configure(fg_color=t.BORDER_BTN)
         self.attributes("-topmost", True)
@@ -387,6 +456,7 @@ class Dialog(ctk.CTkToplevel):
     def __init__(self, parent, title, width=440):
         super().__init__(parent)
         self.withdraw()
+        t.conceal(self)
         self.title(title)
         self.configure(fg_color=t.MAIN)
         self.resizable(False, False)
@@ -503,3 +573,97 @@ class FieldsDialog(Dialog):
         if missing:
             return
         self.ok(values)
+
+
+def empty_state(parent, icon, title, text="", button=None, bg="transparent"):
+    """Пустой экран в одном стиле: значок, заголовок, пояснение и, если нужно, одна кнопка.
+
+    button: (подпись, команда)."""
+    box = holder(parent, bg)
+    ctk.CTkLabel(box, text="", image=t.ui_icon(icon, "muted", 28)).pack(pady=(4, 6))
+    label(box, title, 14, t.CAPTION, "bold", justify="center").pack()
+    if text:
+        label(box, text, 12, t.MUTED, wraplength=220, justify="center").pack(pady=(2, 0))
+    if button:
+        outline_button(box, button[0], button[1], width=150, size=12).pack(pady=(12, 0))
+    return box
+
+
+class Toasts:
+    """Короткие сообщения в правом нижнем углу окна вместо модальных окон, где ответ не нужен.
+
+    Новое сообщение снизу, видно не больше трёх, каждое закрывается само через несколько секунд."""
+
+    LIMIT = 3
+    WIDTH = 340
+
+    def __init__(self, root):
+        self.root = root
+        self.items = []
+
+    def show(self, text, kind="info", action=None, timeout=4500):
+        """kind: info, ok, error. action: (подпись, команда) для кнопки в сообщении."""
+        icon, tone = {"ok": ("check", t.SUCCESS), "error": ("info", t.ERROR)}.get(kind, ("info", t.ACCENT))
+        toast = ctk.CTkFrame(self.root, fg_color=t.CARD, corner_radius=t.RADIUS, border_width=1,
+                             border_color=t.BORDER_BTN, width=self.WIDTH, height=1)
+        # рамка подстраивается под содержимое, распорка держит одну ширину у всех сообщений
+        ctk.CTkFrame(toast, fg_color="transparent", width=self.WIDTH, height=1, corner_radius=0).pack(side="bottom")
+        stripe = ctk.CTkFrame(toast, fg_color=tone, corner_radius=2, width=3, height=1)
+        stripe.pack(side="left", fill="y", padx=(8, 0), pady=10)
+        ctk.CTkLabel(toast, text="", image=t.ui_icon(icon, "muted", 16)).pack(side="left", padx=(10, 6), anchor="n",
+                                                                          pady=12)
+        close = ctk.CTkButton(toast, text="", image=t.ui_icon("x", "muted", 14), width=26, height=26,
+                              fg_color="transparent", hover_color=t.CARD_SEL, corner_radius=t.RADIUS,
+                              command=lambda: self.close(toast))
+        close.pack(side="right", anchor="n", padx=(0, 6), pady=8)
+        body = holder(toast)
+        body.pack(side="left", fill="x", expand=True, pady=10)
+        toast.text = label(body, text, 12, t.TEXT, anchor="w", justify="left", wraplength=self.WIDTH - 110)
+        toast.text.pack(anchor="w")
+        if action:
+            ghost_button(body, action[0], lambda: (self.close(toast), action[1]()), height=26, size=12,
+                         color=t.ACCENT_TEXT, width=20).pack(anchor="w", pady=(4, 0))
+        self.items.append(toast)
+        while len(self.items) > self.LIMIT:
+            self.close(self.items[0], animate=False)
+        self.layout(new=toast)
+        self.root.after(timeout, lambda: self.close(toast))
+        return toast
+
+    def layout(self, new=None):
+        y = -16
+        for toast in reversed(self.items):
+            try:
+                toast.update_idletasks()
+                scale = ctk.ScalingTracker.get_widget_scaling(toast)
+                h = toast.winfo_reqheight() / scale
+            except tk.TclError:
+                continue
+            if toast is new and motion.active():
+                target = y
+
+                def step(p, w=toast, target=target):
+                    w.place(relx=1.0, rely=1.0, x=-16 + round(24 * (1 - p)), y=target, anchor="se")
+
+                step(0.0)
+                toast.lift()
+                motion.run(toast, f"toast-{id(toast)}", 180, step)
+            else:
+                toast.place(relx=1.0, rely=1.0, x=-16, y=y, anchor="se")
+                toast.lift()
+            y -= h + 8
+
+    def close(self, toast, animate=True):
+        if toast not in self.items:
+            return
+        self.items.remove(toast)
+        motion.cancel(f"toast-{id(toast)}")
+        try:
+            toast.destroy()
+        except tk.TclError:
+            pass
+        self.layout()
+
+    def clear(self):
+        for toast in list(self.items):
+            self.close(toast, animate=False)
