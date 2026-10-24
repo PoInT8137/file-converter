@@ -20,7 +20,7 @@ from .registry import FORMATS, ALIASES, registry, title
 from .stats import History, Stats
 from .tools import SECTION_TITLES, TOOLS, TOOLS_BY_ID
 from .osutils import show_in_folder
-from .ui import motion
+from .ui import ctk_patches, motion
 from .ui import theme as t
 from .ui.convert_page import ConvertPage
 from .ui.other_pages import AllConversions, HistoryPage, SettingsPage
@@ -28,7 +28,9 @@ from .ui.overlays import CommandPalette, EnginesPanel, Overlay
 from .ui.queue_panel import QueuePanel
 from .ui.tools_page import ToolsPage
 from .ui.widgets import (Dot, on_event, FieldsDialog, Flow, Popover, Toasts, ask_yes_no, caption, checkbox, entry,
-                         mono_label, message, outline_button, segmented, separator)
+                         mono_label, message, outline_button, pointer_inside, segmented, separator)
+
+ctk_patches.apply()
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -123,7 +125,6 @@ class App(ctk.CTk, DND_BASE):
         self.content.grid(row=0, column=4, sticky="nsew")
         self.content.grid_rowconfigure(0, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
-        self.transition = motion.PageTransition(self.content)
         self.palette = CommandPalette(self)
         # поле палитры: Ctrl+K ставит фокус сюда
         self.search = self.palette.entry
@@ -143,6 +144,8 @@ class App(ctk.CTk, DND_BASE):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.show_section("convert")
         self.after(80, self.poll)
+        if not selftest:
+            self.after(700, self.prebuild_next)
 
     def fit_to_screen(self):
         """Стартовый размер 1180x760, но не больше рабочей области экрана.
@@ -257,27 +260,42 @@ class App(ctk.CTk, DND_BASE):
 
     def nav_button(self, side, s):
         key, text, icon = s
+        # своя подсветка вместо встроенной hover_color: цвет меняется плавно, как в Happ
         btn = ctk.CTkButton(side, text=text, anchor="w", height=t.H - 4, corner_radius=t.RADIUS,
-                            fg_color="transparent", hover_color=t.CARD, text_color=t.MUTED, font=t.font(13),
+                            fg_color=t.BAR, hover=False, text_color=t.MUTED, font=t.font(13),
                             image=t.ui_icon(icon, "muted", 18), compound="left",
                             command=lambda k=key: self.show_section(k))
         self.nav[key] = (btn, icon)
         state = {"job": None}
 
         def enter(_e):
+            if key != self.current_key:
+                self.fade_nav(key, t.CARD, t.CAPTION)
             # подсказка с клавишей появляется, только если задержать курсор
             state["job"] = btn.after(700, lambda: Popover(btn, f"{text}    Ctrl+{HOTKEYS[key]}", below=True,
                                                           timeout=1800) if btn.winfo_exists() else None)
 
-        def leave(_e):
+        def cancel_hint(_e=None):
             if state["job"]:
                 btn.after_cancel(state["job"])
                 state["job"] = None
 
+        def leave(_e):
+            cancel_hint()
+            if key != self.current_key and not pointer_inside(btn):
+                self.fade_nav(key, t.BAR, t.MUTED)
+
         btn.bind("<Enter>", enter, add="+")
         btn.bind("<Leave>", leave, add="+")
-        btn.bind("<ButtonPress-1>", leave, add="+")
+        btn.bind("<ButtonPress-1>", cancel_hint, add="+")
         return btn
+
+    NAV_FADE = 250
+
+    def fade_nav(self, key, fill, text):
+        btn = self.nav[key][0]
+        motion.fade_color(btn, f"nav-{key}-fg", "fg_color", btn.cget("fg_color"), fill, self.NAV_FADE)
+        motion.fade_color(btn, f"nav-{key}-text", "text_color", btn.cget("text_color"), text, self.NAV_FADE)
 
     def move_marker(self, animate=True):
         if self.current_key not in self.nav:
@@ -337,22 +355,13 @@ class App(ctk.CTk, DND_BASE):
     def show_section(self, key):
         self.close_search()
         previous = self.current_key
-        for k, (btn, icon) in self.nav.items():
-            on = k == key
-            btn.configure(fg_color=t.CARD_SEL if on else "transparent", text_color=t.TEXT if on else t.MUTED,
-                          image=t.ui_icon(icon, "accent" if on else "muted", 18))
         old = self.current
+        if previous == "settings" and key != "settings":
+            # всё, что изменили на странице настроек, на ней уже показано: пересобирать при возврате не нужно
+            self.pages["settings"].remember()
         page = self.pages.get(key)
         if page is None:
-            if key == "convert":
-                page = ConvertPage(self.content, self)
-            elif key == "history":
-                page = HistoryPage(self.content, self)
-            elif key == "settings":
-                page = SettingsPage(self.content, self)
-            else:
-                page = ToolsPage(self.content, self, key)
-            self.pages[key] = page
+            page = self.make_page(key)
         elif key in ("history", "settings"):
             page.refresh()
         elif isinstance(page, ToolsPage):
@@ -361,14 +370,52 @@ class App(ctk.CTk, DND_BASE):
             sel = self.queue_panel.selected
             if len(sel) == 1 and page.item is not sel[0]:
                 page.show_file(sel[0])
+        # раздел меняется мгновенно, как в Happ: двигать страницу целиком в Tk дорого и выглядит рывками
+        if old is not None and old is not page:
+            old.grid_remove()
+        page.grid(row=0, column=0, sticky="nsew")
         self.current = page
         self.current_key = key
-        if page is old:
-            self.transition.finish()
-            page.grid(row=0, column=0, sticky="nsew")
-        else:
-            self.transition.start(old, page, lambda p: p.grid(row=0, column=0, sticky="nsew"))
+        # выбранный пункт меню подсвечивается сразу, без перехода; плавной остаётся только подсветка при наведении
+        for k, (btn, icon) in self.nav.items():
+            on = k == key
+            if on or k == previous:
+                motion.cancel(f"nav-{k}-fg")
+                motion.cancel(f"nav-{k}-text")
+                btn.configure(image=t.ui_icon(icon, "accent" if on else "muted", 18),
+                              fg_color=t.CARD_SEL if on else t.BAR, text_color=t.TEXT if on else t.MUTED)
         self.move_marker(animate=previous is not None)
+
+    def make_page(self, key):
+        if key == "convert":
+            page = ConvertPage(self.content, self)
+        elif key == "history":
+            page = HistoryPage(self.content, self)
+        elif key == "settings":
+            page = SettingsPage(self.content, self)
+        else:
+            page = ToolsPage(self.content, self, key)
+        self.pages[key] = page
+        return page
+
+    # первое открытие раздела занимает до секунды (CustomTkinter долго раскладывает свои виджеты),
+    # поэтому после запуска разделы заранее строятся и раскладываются по одному, под текущей страницей
+    PREBUILD = ["pdf", "settings", "images", "history", "media", "ocr"]
+
+    def prebuild_next(self):
+        for key in self.PREBUILD:
+            if key in self.pages:
+                continue
+            page = self.make_page(key)
+            outer = getattr(page, "_parent_frame", page)
+            page.grid(row=0, column=0, sticky="nsew")
+            if self.current is not None:
+                outer.lower(getattr(self.current, "_parent_frame", self.current))
+            self.update_idletasks()
+            if page is not self.current:
+                page.grid_remove()
+            self.after(150, self.prebuild_next)
+            return
 
     def go_home(self):
         self.queue_panel.select([])
@@ -603,6 +650,8 @@ class App(ctk.CTk, DND_BASE):
         for key in list(self.pages):
             if key not in ("settings", self.current_key):
                 self.pages.pop(key).destroy()
+        if not self.selftest:
+            self.after(300, self.prebuild_next)
         conv = self.pages.get("convert")
         if conv is not None:
             if conv.item is not None:
@@ -761,7 +810,6 @@ class App(ctk.CTk, DND_BASE):
             if not ask_yes_no(self, "Закрыть File Converter", text, "Остановить и закрыть"):
                 return
         self.jobs.shutdown()
-        self.transition.finish()
         self.destroy()
         gc.collect()
         gc.enable()

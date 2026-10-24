@@ -7,6 +7,7 @@ import customtkinter as ctk
 from ..config import data_dir
 from ..osutils import open_path, show_in_folder
 from ..registry import CATEGORIES, category, registry, title
+from . import motion
 from . import theme as t
 from .widgets import (Dialog, Popover, on_event, accent_button, ask_yes_no, caption, checkbox, empty_state, entry, label,
                       make_clickable, message, mono_label, outline_button, segmented, separator)
@@ -134,9 +135,20 @@ def short(text, n=40):
 class SettingsPage(Page):
     def __init__(self, parent, app):
         super().__init__(parent, app)
+        self.signature = None
         self.refresh()
 
-    def refresh(self):
+    def make_signature(self):
+        return repr(sorted(self.app.settings.values.items())), tuple(self.app.engines.status())
+
+    def remember(self):
+        self.signature = self.make_signature()
+
+    def refresh(self, force=False):
+        # страница строится около секунды, поэтому пересобирается, только если настройки или движки
+        # изменились где-то ещё
+        if not force and self.signature == self.make_signature():
+            return
         b = self.reset()
         self.path_entries = {}
         label(b, "Настройки", 22, weight="bold").pack(anchor="w")
@@ -152,7 +164,7 @@ class SettingsPage(Page):
         anim = ctk.BooleanVar(value=bool(self.app.settings.get("animations")))
         checkbox(box, "Анимации интерфейса", anim, lambda: self.app.set_animations(anim.get())).pack(
             anchor="w", pady=(8, 0))
-        mono_label(box, "Плавные переходы между разделами. Отключаются сами, если компьютер не успевает.", 11,
+        mono_label(box, "Плавная подсветка меню и появление окон.", 11,
                    wraplength=420, justify="left").pack(anchor="w")
 
         caption(b, "РЕЗУЛЬТАТ И ПОВЕДЕНИЕ").pack(anchor="w", pady=(20, 8))
@@ -197,6 +209,7 @@ class SettingsPage(Page):
         label(box, f"File Converter {__version__}", 13, weight="bold").pack(anchor="w")
         mono_label(box, "Ctrl K поиск   Ctrl O добавить файлы   Ctrl 1-7 разделы", 11, wraplength=420,
                    justify="left").pack(anchor="w", pady=(4, 0))
+        self.remember()
 
     def card(self, parent):
         outer = ctk.CTkFrame(parent, fg_color=t.CARD, corner_radius=t.RADIUS, border_width=1, border_color=t.BORDER)
@@ -237,7 +250,7 @@ class SettingsPage(Page):
         for key, e in self.path_entries.items():
             self.app.settings.set(key, e.get().strip())
         self.app.rescan_engines()
-        self.refresh()
+        self.refresh(force=True)
 
     def reset_stats(self):
         if ask_yes_no(self, "Сбросить статистику", "Счётчики и закреплённые плитки будут сброшены.", "Сбросить"):
@@ -272,21 +285,43 @@ class AllConversions(Dialog):
         self.empty = mono_label(self.list, "Ничего не найдено", 12)
         e.bind("<KeyRelease>", on_event(lambda ev: self.fill()))
         self.buttons("Закрыть", None)
-        self.build_some()
+        # список строится порциями, когда окно уже появилось: иначе порции тормозят анимацию появления
+        if motion.active():
+            self.after(self.OPEN + 30, self.build_some)
+        else:
+            self.build_some()
         self.after(150, e.focus_set)
 
     def build_some(self):
+        if self.closing:
+            return
         try:
-            for _ in range(4):
+            start = len(self.widgets)
+            # по одной строке за раз: строка с десятком кнопок строится около 50 мс, порция из четырёх
+            # задерживала кадры анимации на 200 мс
+            for _ in range(2 if self.widgets and self.widgets[-1][0] == "caption" else 1):
                 if len(self.widgets) >= len(self.plan):
-                    return
+                    break
                 kind, name, data = self.plan[len(self.widgets)]
                 if kind == "caption":
                     self.widgets.append((kind, caption(self.list, name.upper()), data))
                 else:
                     self.widgets.append((kind, self.make_row(name, data), data))
-            self.fill()
-            self.after(15, self.build_some)
+            if self.entry.get().strip():
+                self.fill()
+            else:
+                # без поиска раскладываем только новую порцию: полная раскладка после каждой порции
+                # к концу списка занимала до 300 мс и тормозила окно
+                for kind, w, data in self.widgets[start:]:
+                    if kind == "caption":
+                        w.pack(anchor="w", pady=(10, 4))
+                    else:
+                        for n, (c, b) in enumerate(w.chips):
+                            b.grid(row=n // 8, column=n % 8, padx=2, pady=2)
+                        w.visible = True
+                        w.pack(fill="x", pady=2)
+            if len(self.widgets) < len(self.plan):
+                self.after(15, self.build_some)
         except Exception:
             pass
 
@@ -346,4 +381,5 @@ class AllConversions(Dialog):
 
     def pick(self, conv):
         self.ok(None)
-        self.app.pick_and_convert(conv.src, conv.dst)
+        # выбор файла открываем, когда диалог уже растворился: системное окно останавливает анимацию
+        self.app.after(self.CLOSE + 40, lambda: self.app.pick_and_convert(conv.src, conv.dst))

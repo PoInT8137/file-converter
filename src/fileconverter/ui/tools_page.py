@@ -21,6 +21,8 @@ class ToolsPage(ctk.CTkFrame):
         self.selected = self.tools[0]
         self.cards = {}
         self.log = None
+        self.painted = None
+        self.chips_for = None
 
         self.action = ctk.CTkFrame(self, fg_color=t.BAR, corner_radius=0)
         self.action.pack(side="bottom", fill="x")
@@ -114,16 +116,30 @@ class ToolsPage(ctk.CTkFrame):
         return [i for i in self.app.queue_panel.selected if self.selected.accepts(i.path)]
 
     def refresh(self):
-        for tid, card in self.cards.items():
-            on = tid == self.selected.id
-            card.configure(border_color=t.ACCENT if on else t.BORDER, fg_color=t.CARD_SEL if on else t.CARD)
-            card.box.configure(fg_color=t.CARD_SEL if on else t.CARD, border_color=t.ACCENT if on else t.BORDER_BTN)
-            tool = next(x for x in self.tools if x.id == tid)
-            card.icon.configure(image=t.ui_icon(tool.icon, "accent" if on else "muted", 20))
-        for w in self.chips.winfo_children():
-            w.destroy()
+        # перекрашиваются только карточки, у которых изменился выбор: перекраска всех занимала до 150 мс
+        if self.painted != self.selected.id:
+            for tid in (self.painted, self.selected.id):
+                card = self.cards.get(tid)
+                if card is None:
+                    continue
+                on = tid == self.selected.id
+                card.configure(border_color=t.ACCENT if on else t.BORDER, fg_color=t.CARD_SEL if on else t.CARD)
+                card.box.configure(fg_color=t.CARD_SEL if on else t.CARD,
+                                   border_color=t.ACCENT if on else t.BORDER_BTN)
+                tool = next(x for x in self.tools if x.id == tid)
+                card.icon.configure(image=t.ui_icon(tool.icon, "accent" if on else "muted", 20))
+            self.painted = self.selected.id
         selected = self.app.queue_panel.selected
         accepted = [i for i in selected if any(tool.accepts(i.path) for tool in self.tools)]
+        chips_for = tuple(id(i) for i in accepted)
+        if chips_for != self.chips_for:
+            self.chips_for = chips_for
+            self.show_chips(accepted)
+        self.update_action()
+
+    def show_chips(self, accepted):
+        for w in self.chips.winfo_children():
+            w.destroy()
         if not accepted:
             row = ctk.CTkFrame(self.chips, fg_color=t.MAIN)
             row.pack(fill="x")
@@ -141,6 +157,8 @@ class ToolsPage(ctk.CTkFrame):
                 label(chip, name, 12).pack(side="left", padx=(0, 10))
             if len(accepted) > 6:
                 row.add(mono_label(row, f"+{len(accepted) - 6}", 12))
+
+    def update_action(self):
         files = self.files()
         tool = self.selected
         self.action_text.configure(text=tool.action_text(len(files)))

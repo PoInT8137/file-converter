@@ -6,17 +6,6 @@ ctk = pytest.importorskip("customtkinter")
 from test_ui import app, pump  # noqa: F401  общая подготовка окна
 
 
-@pytest.fixture
-def animated(app):
-    """Анимации включены так, как у пользователя, хотя окно в тестах прозрачное."""
-    from fileconverter.ui import motion, theme as t
-    hidden, enabled = t.HIDDEN, motion.enabled
-    t.HIDDEN, motion.enabled, motion.too_slow = False, True, False
-    yield app
-    app.transition.finish()
-    t.HIDDEN, motion.enabled = hidden, enabled
-
-
 def test_theme_switch_repaints(app):
     from fileconverter.ui import theme as t
     try:
@@ -40,21 +29,53 @@ def test_light_icons_differ_from_dark():
     assert light.getpixel((24, 24)) != dark.getpixel((24, 24)) or light.tobytes() != dark.tobytes()
 
 
-def test_animated_transition_ends_on_grid(animated):
-    app = animated
-    for key in ["pdf", "history", "convert", "settings", "convert"]:
+def test_sections_switch_instantly(app):
+    for key in ["pdf", "history", "convert"]:
         app.show_section(key)
-        pump(app, 0.02)
-    # раздел назначен сразу, анимация только догоняет
-    assert app.current is app.pages["convert"]
-    pump(app, 0.6)
-    frame = app.current._parent_frame
-    assert frame.winfo_manager() == "grid"
+        outer = getattr(app.current, "_parent_frame", app.current)
+        assert outer.winfo_manager() == "grid"
+    pump(app, 0.1)
     for key, page in app.pages.items():
         if page is not app.current:
-            outer = getattr(page, "_parent_frame", page)
-            assert not outer.winfo_ismapped(), key
-    assert app.transition.overlay is None
+            assert not getattr(page, "_parent_frame", page).winfo_ismapped(), key
+
+
+def test_nav_colors_follow_selection(app):
+    from fileconverter.ui import theme as t
+    app.show_section("history")
+    pump(app, 0.1)
+    assert app.nav["history"][0].cget("fg_color") == t.CARD_SEL
+    assert app.nav["history"][0].cget("text_color") == t.TEXT
+    assert app.nav["convert"][0].cget("fg_color") == t.BAR
+    assert app.nav["convert"][0].cget("text_color") == t.MUTED
+
+
+def test_nav_fade_reaches_target_colors():
+    from fileconverter.ui import motion
+    assert motion.mix("#000000", "#ffffff", 0.5) == "#808080"
+    assert motion.mix("#14181d", "#14181d", 0.3) == "#14181d"
+
+
+def test_dialog_backdrop_and_cleanup(app):
+    from fileconverter.ui.widgets import Dialog
+    before = app.tk.call("bind", app._w, "<Configure>")
+    d = Dialog(app, "Проверка")
+    d.buttons("Готово", "Отмена")
+    seen = {}
+
+    def answer():
+        seen["backdrop"] = d.backdrop is not None and d.backdrop.winfo_exists()
+        d.ok("да")
+
+    app.after(200, answer)
+    assert d.show() == "да"
+    assert seen["backdrop"]
+    assert not d.winfo_exists()
+    # обработчик слежения за окном снят, остальные (CustomTkinter, узкий режим) на месте
+    def lines(script):
+        return [line for line in script.split("\n") if line.strip()]
+
+    assert lines(app.tk.call("bind", app._w, "<Configure>")) == lines(before)
     assert not app.errors
 
 
@@ -144,3 +165,48 @@ def test_engines_panel_lists_engines(app):
         assert title in texts
     app.engines_panel.close()
     assert not app.engines_panel.is_open
+
+
+def test_settings_not_rebuilt_without_changes(app):
+    app.show_section("settings")
+    pump(app, 0.1)
+    body = app.pages["settings"].body
+    app.show_section("convert")
+    app.show_section("settings")
+    assert app.pages["settings"].body is body
+    app.show_section("convert")
+    app.settings.set("open_after", True)
+    app.show_section("settings")
+    assert app.pages["settings"].body is not body
+
+
+def test_scrollbar_draws_once_after_layout(app):
+    from customtkinter.windows.widgets.ctk_scrollbar import CTkScrollbar
+    from fileconverter.ui import ctk_patches
+    assert CTkScrollbar.set is ctk_patches._set
+    bar = app.queue_panel.list._scrollbar
+    calls = []
+    original = bar._draw
+    bar._draw = lambda *a, **k: (calls.append(1), original(*a, **k))
+    try:
+        for i in range(10):
+            bar.set(0, 0.5 + i / 100)
+        assert calls == []
+        pump(app, 0.05)
+        assert len(calls) == 1
+    finally:
+        del bar._draw
+
+
+def test_prebuild_builds_pages_under_current(app):
+    for key in list(app.pages):
+        if key not in ("convert", "settings"):
+            app.pages.pop(key).destroy()
+    app.prebuild_next()
+    pump(app, 0.05)
+    built = [k for k in app.PREBUILD if k in app.pages]
+    assert built
+    assert app.current is app.pages["convert"]
+    for key in built:
+        outer = getattr(app.pages[key], "_parent_frame", app.pages[key])
+        assert not outer.winfo_ismapped(), key

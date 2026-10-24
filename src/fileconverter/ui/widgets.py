@@ -1,3 +1,4 @@
+import ctypes
 import tkinter as tk
 
 import customtkinter as ctk
@@ -379,15 +380,11 @@ class TabBar(ctk.CTkFrame):
     def select(self, key, notify=True):
         if key not in self.items:
             return
-        previous, self.active = self.active, key
+        self.active = key
         for k, (btn, line) in self.items.items():
             on = k == key
             btn.configure(text_color=t.TEXT if on else t.MUTED, font=t.font(13, "bold" if on else "normal"))
-            if notify and k in (previous, key) and previous is not None:
-                motion.fade_color(line, f"tab-{id(line)}", "fg_color", line.cget("fg_color"),
-                                  t.ACCENT if on else self.bg, 160)
-            else:
-                line.configure(fg_color=t.ACCENT if on else self.bg)
+            line.configure(fg_color=t.ACCENT if on else self.bg)
         if notify:
             self.command(key)
 
@@ -450,35 +447,130 @@ class Popover(ctk.CTkToplevel):
             Popover.current = None
 
 
+def unbind_one(widget, sequence, funcid):
+    """Снимает один обработчик. unbind() в Python 3.12 снимает все обработчики события,
+    в том числе собственный обработчик размеров CustomTkinter."""
+    try:
+        script = widget.tk.call("bind", widget._w, sequence)
+        kept = "\n".join(line for line in script.split("\n") if line.strip() and funcid not in line)
+        widget.tk.call("bind", widget._w, sequence, kept)
+        widget.deletecommand(funcid)
+    except tk.TclError:
+        pass
+
+
+class Backdrop(tk.Toplevel):
+    """Затемнение окна программы под диалогом: чёрное окно без рамки с плавно растущей непрозрачностью."""
+
+    def __init__(self, top):
+        super().__init__(top, bg="#000000")
+        self.withdraw()
+        self.overrideredirect(True)
+        self.transient(top)
+        self.top = top
+        self.attributes("-alpha", 0.0)
+        self.target = 0.45 if t.is_dark() else 0.3
+        self.cover()
+        if not t.HIDDEN:
+            self.deiconify()
+
+    def cover(self):
+        top = self.top
+        self.geometry(f"{top.winfo_width()}x{top.winfo_height()}+{top.winfo_rootx()}+{top.winfo_rooty()}")
+
+
 class Dialog(ctk.CTkToplevel):
-    """Модальное окно в стиле приложения."""
+    """Модальное окно в стиле приложения, как в Happ: без рамки Windows, по центру окна программы,
+    окно программы под ним затемняется. Появляется и закрывается плавно (прозрачность окна рисует
+    Windows, на кадр ничего не перерисовывается)."""
+
+    OPEN = 170
+    CLOSE = 140
+    RISE = 10
+    # не 1.0: при полной непрозрачности Tk выключает у окна прозрачность, и при закрытии Windows
+    # заново перерисовывает окно целиком, это пауза в несколько сотен миллисекунд
+    OPAQUE = 0.995
 
     def __init__(self, parent, title, width=440):
         super().__init__(parent)
         self.withdraw()
         t.conceal(self)
+        self.overrideredirect(True)
         self.title(title)
-        self.configure(fg_color=t.MAIN)
+        self.configure(fg_color=t.BORDER_BTN)
         self.resizable(False, False)
         self.result = None
-        self.transient(parent.winfo_toplevel())
-        self.body = ctk.CTkFrame(self, fg_color=t.MAIN, corner_radius=0, width=width)
-        self.body.pack(fill="both", expand=True, padx=24, pady=(20, 12))
-        label(self.body, title, 17, weight="bold").pack(anchor="w", pady=(0, 12))
-        self.footer = ctk.CTkFrame(self, fg_color=t.BAR, corner_radius=0)
+        self.closing = False
+        self.backdrop = None
+        self.top = parent.winfo_toplevel()
+        self.transient(self.top)
+        frame = ctk.CTkFrame(self, fg_color=t.MAIN, corner_radius=0)
+        frame.pack(fill="both", expand=True, padx=1, pady=1)
+        self.body = ctk.CTkFrame(frame, fg_color=t.MAIN, corner_radius=0, width=width)
+        self.body.pack(fill="both", expand=True, padx=24, pady=(18, 12))
+        head = ctk.CTkFrame(self.body, fg_color=t.MAIN, corner_radius=0)
+        head.pack(fill="x", pady=(0, 12))
+        label(head, title, 17, weight="bold").pack(side="left")
+        ctk.CTkButton(head, text="", image=t.ui_icon("x", "muted", 16), width=32, height=32, fg_color="transparent",
+                      hover_color=t.CARD, corner_radius=t.RADIUS, command=self.cancel).pack(side="right")
+        self.footer = ctk.CTkFrame(frame, fg_color=t.BAR, corner_radius=0)
         self.footer.pack(fill="x", side="bottom")
         self.bind("<Escape>", on_event(lambda e: self.cancel()))
         self.protocol("WM_DELETE_WINDOW", self.cancel)
 
-    def show(self):
-        self.update_idletasks()
-        top = self.master.winfo_toplevel()
-        w, h = max(self.winfo_reqwidth(), 420), self.winfo_reqheight()
+    def _windows_set_titlebar_color(self, color_mode):
+        # у окна нет заголовка Windows; CustomTkinter здесь прятал и показывал окно, оно мигало
+        pass
+
+    def _round_corners(self):
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
+            value = ctypes.c_int(2)  # DWMWCP_ROUND, Windows 11
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(value), ctypes.sizeof(value))
+        except Exception:
+            pass
+
+    def _place(self, rise=0):
+        top = self.top
+        w, h = self.size
         x = top.winfo_rootx() + (top.winfo_width() - w) // 2
         y = top.winfo_rooty() + (top.winfo_height() - h) // 3
-        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.geometry(f"+{max(0, x)}+{max(0, y + rise)}")
+
+    def _follow(self, event):
+        # окно программы перетащили или изменили его размер: затемнение и диалог едут следом
+        if event.widget is self.top and not self.closing:
+            if self.backdrop is not None:
+                self.backdrop.cover()
+            self._place()
+
+    def show(self):
+        self.update_idletasks()
+        scale = ctk.ScalingTracker.get_widget_scaling(self)
+        self.size = (max(self.winfo_reqwidth(), int(420 * scale)), self.winfo_reqheight())
+        self.rise = int(self.RISE * scale)
+        try:
+            self.backdrop = Backdrop(self.top)
+        except tk.TclError:
+            self.backdrop = None
+        self.follow_id = self.top.bind("<Configure>", self._follow, add="+")
+        self._round_corners()
+        animate = motion.active()
+        if not t.HIDDEN:
+            self.attributes("-alpha", 0.0 if animate else self.OPAQUE)
+        self._place(self.rise if animate else 0)
         self.deiconify()
         self.lift()
+        if animate:
+            def step(p):
+                self.attributes("-alpha", self.OPAQUE * p)
+                self._place(round(self.rise * (1 - p)))
+                if self.backdrop is not None:
+                    self.backdrop.attributes("-alpha", self.backdrop.target * p)
+
+            motion.run(self, f"dialog-{id(self)}", self.OPEN, step)
+        elif self.backdrop is not None and not t.HIDDEN:
+            self.backdrop.attributes("-alpha", self.backdrop.target)
         try:
             self.grab_set()
         except tk.TclError:
@@ -489,11 +581,45 @@ class Dialog(ctk.CTkToplevel):
 
     def ok(self, value=True):
         self.result = value
-        self.destroy()
+        self.close()
 
     def cancel(self):
         self.result = None
-        self.destroy()
+        self.close()
+
+    def close(self):
+        if self.closing:
+            return
+        self.closing = True
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        if not motion.active() or not self.winfo_viewable():
+            self.destroy()
+            return
+        start = float(self.attributes("-alpha"))
+        dim = float(self.backdrop.attributes("-alpha")) if self.backdrop is not None else 0.0
+
+        def step(p):
+            self.attributes("-alpha", start * (1 - p))
+            if self.backdrop is not None:
+                self.backdrop.attributes("-alpha", dim * (1 - p))
+
+        motion.run(self, f"dialog-{id(self)}", self.CLOSE, step, self.destroy)
+
+    def destroy(self):
+        motion.cancel(f"dialog-{id(self)}")
+        if getattr(self, "follow_id", None):
+            unbind_one(self.top, "<Configure>", self.follow_id)
+            self.follow_id = None
+        if self.backdrop is not None:
+            try:
+                self.backdrop.destroy()
+            except tk.TclError:
+                pass
+            self.backdrop = None
+        super().destroy()
 
     def buttons(self, ok_text="Готово", cancel_text="Отмена", ok_command=None):
         row = ctk.CTkFrame(self.footer, fg_color=t.BAR, corner_radius=0)
