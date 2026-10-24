@@ -86,14 +86,14 @@ class HistoryPage(Page):
         # иконка и имя одной меткой: каждый CTk-виджет дорогой, а строк много
         src = Path(it["source"])
         ctk.CTkLabel(table, text=" " + short(src.name), image=t.get_icon(src.suffix, 20), compound="left",
-                     font=t.font(12), text_color=t.TEXT, anchor="w", justify="left", wraplength=150).grid(
+                     font=t.font(12), text_color=t.TEXT, anchor="w", justify="left", wraplength=120).grid(
             row=top, column=0, sticky="w", padx=12, pady=(6, 0))
         mono_label(table, time.strftime("%d.%m %H:%M", time.localtime(it["time"])), 10).grid(
             row=bottom, column=0, sticky="w", padx=(38, 12), pady=(0, 6))
         res = Path(it["result"]) if it.get("result") else None
         if res:
             ctk.CTkLabel(table, text=" " + short(res.name), image=t.get_icon(res.suffix, 20), compound="left",
-                         font=t.font(12), text_color=t.TEXT, anchor="w", justify="left", wraplength=150).grid(
+                         font=t.font(12), text_color=t.TEXT, anchor="w", justify="left", wraplength=120).grid(
                 row=top, column=1, sticky="w", padx=12, pady=(6, 0))
         else:
             label(table, short(it.get("message", ""), 60), 11, t.MUTED, anchor="w", justify="left",
