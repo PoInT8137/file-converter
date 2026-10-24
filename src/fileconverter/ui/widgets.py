@@ -175,12 +175,36 @@ def walk(widget):
         yield from walk(child)
 
 
+CTK_PARTS = ("_canvas", "_label", "_text_label", "_image_label", "_entry", "_textbox")
+
+
+def walk_own(widget):
+    """Виджеты без внутренних частей CustomTkinter.
+
+    CTk-виджет сам передаёт bind() своим canvas и label. Если повесить обработчик ещё и на них,
+    он сработает дважды: один клик откроет два окна выбора файла, а переключатель вернётся обратно.
+    """
+    yield widget
+    parts = {id(getattr(widget, a)) for a in CTK_PARTS if getattr(widget, a, None) is not None}
+    for child in widget.winfo_children():
+        if id(child) not in parts:
+            yield from walk_own(child)
+
+
 def bind_tree(widget, sequence, func):
-    for w in walk(widget):
+    for w in walk_own(widget):
         try:
             w.bind(sequence, func, add="+")
         except (ValueError, NotImplementedError, tk.TclError):
             pass
+
+
+def inside(widget, event):
+    try:
+        x, y = widget.winfo_rootx(), widget.winfo_rooty()
+        return x <= event.x_root < x + widget.winfo_width() and y <= event.y_root < y + widget.winfo_height()
+    except tk.TclError:
+        return False
 
 
 def pointer_inside(widget):
@@ -217,13 +241,14 @@ def make_clickable(widget, on_click=None, on_enter=None, on_leave=None):
                 pass
         widget.after(30, check)
 
-    def press(event=None):
+    def release(event=None):
+        # как у обычной кнопки: срабатывает при отпускании, если курсор всё ещё над элементом.
         # без события сюда может попасть только зависший after() удалённого виджета, это не клик
-        if event is not None:
+        if event is not None and inside(widget, event):
             on_click()
 
     if on_click:
-        bind_tree(widget, "<Button-1>", press)
+        bind_tree(widget, "<ButtonRelease-1>", release)
     bind_tree(widget, "<Enter>", enter)
     bind_tree(widget, "<Leave>", leave)
     for w in walk(widget):
@@ -344,7 +369,7 @@ class Popover(ctk.CTkToplevel):
             y = anchor.winfo_rooty() - self.winfo_reqheight() - 6
         x = min(x, anchor.winfo_screenwidth() - self.winfo_reqwidth() - 10)
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
-        bind_tree(self, "<Button-1>", lambda e=None: self.close())
+        bind_tree(self, "<ButtonRelease-1>", lambda e=None: self.close())
         self.after(timeout, self.close)
 
     def close(self):
@@ -430,6 +455,7 @@ class FieldsDialog(Dialog):
     def __init__(self, parent, title, fields, note=""):
         super().__init__(parent, title)
         self.widgets = {}
+        self.errors = {}
         if note:
             label(self.body, note, 12, color=t.MUTED, wraplength=400, justify="left").pack(anchor="w", pady=(0, 8))
         for f in fields:
@@ -447,17 +473,33 @@ class FieldsDialog(Dialog):
                 self.widgets[f.key] = (f, e)
                 if f.hint:
                     mono_label(self.body, f.hint, 11).pack(anchor="w", pady=(2, 0))
+                err = label(self.body, "", 12, t.ERROR, anchor="w")
+                self.errors[f.key] = err
+                e.bind("<KeyRelease>", on_event(lambda ev, k=f.key: self.clear_error(k)))
         self.buttons("Выполнить", "Отмена", self.submit)
         first = next((w for f, w in self.widgets.values() if f.kind != "choice"), None)
         if first is not None:
             self.after(150, first.focus_set)
 
+    def clear_error(self, key):
+        err = self.errors.get(key)
+        if err is not None:
+            err.pack_forget()
+
     def submit(self):
         values = {}
+        missing = False
         for key, (f, w) in self.widgets.items():
             if f.kind == "choice":
                 reverse = {n: k for k, n in f.options}
                 values[key] = reverse.get(w.get(), f.default)
             else:
                 values[key] = w.get()
+                if getattr(f, "required", False) and not values[key].strip():
+                    # пустое обязательное поле: окно не закрываем, пишем под полем
+                    self.errors[key].configure(text="Заполните это поле")
+                    self.errors[key].pack(anchor="w", after=w, pady=(2, 0))
+                    missing = True
+        if missing:
+            return
         self.ok(values)

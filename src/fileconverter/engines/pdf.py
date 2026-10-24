@@ -31,7 +31,9 @@ def open_pdf(path, password=None):
     try:
         doc = pymupdf.open(str(path))
     except Exception as e:
-        raise ConvertError(f"Не удалось открыть PDF: {e}")
+        if "empty file" in str(e).lower():
+            raise ConvertError("Файл пустой.", detail=str(e))
+        raise ConvertError("Файл повреждён или это не PDF.", detail=str(e))
     if doc.needs_pass:
         if password and doc.authenticate(password):
             return doc
@@ -68,7 +70,7 @@ def save_doc(doc, dst, **kw):
     try:
         doc.save(str(dst), garbage=3, deflate=True, **kw)
     except Exception as e:
-        raise ConvertError(f"Не удалось сохранить PDF: {e}")
+        raise ConvertError("Не удалось сохранить PDF.", detail=str(e))
     return ensure_output(dst)
 
 
@@ -128,7 +130,8 @@ def to_docx(engines, src, dst, ctx):
     except ConvertError:
         raise
     except Exception as e:
-        raise ConvertError(f"pdf2docx не смог обработать файл: {e}")
+        raise ConvertError("pdf2docx не смог разобрать этот PDF. Попробуйте конвертацию в TXT или PNG.",
+                           detail=str(e))
     finally:
         root.removeHandler(handler)
         root.setLevel(old_level)
@@ -446,7 +449,7 @@ def compress(engines, files, ctx, params):
             try:
                 doc.save(str(dst), garbage=4, deflate=True, deflate_images=True, deflate_fonts=True, clean=True)
             except Exception as e:
-                raise ConvertError(f"Не удалось сохранить PDF: {e}")
+                raise ConvertError("Не удалось сохранить PDF.", detail=str(e))
         after = Path(dst).stat().st_size
         if after >= before:
             shutil.copy2(src, dst)

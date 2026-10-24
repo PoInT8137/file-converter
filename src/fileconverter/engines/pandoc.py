@@ -32,6 +32,10 @@ def convert(engines, src, dst, ctx):
     ctx.progress(0.2)
     code, out = run(build_command(pandoc, src, dst), timeout=300, cwd=str(Path(src).parent))
     if code != 0:
-        raise ConvertError("Pandoc не смог конвертировать файл: " + last_lines(out))
+        if "unpack" in out or "Unknown" in out or "parse" in out.lower():
+            text = "Файл повреждён или это не документ указанного формата."
+        else:
+            text = "Pandoc не смог конвертировать файл. Возможно, он повреждён."
+        raise ConvertError(text, detail=last_lines(out, 6))
     ctx.progress(1.0)
     return [ensure_output(dst)]

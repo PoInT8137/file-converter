@@ -11,7 +11,11 @@ _local = threading.local()
 
 
 class ConvertError(Exception):
-    """Ошибка с понятным пользователю текстом."""
+    """Ошибка с понятным пользователю текстом. Технические подробности движка лежат в detail."""
+
+    def __init__(self, text, detail=""):
+        super().__init__(text)
+        self.detail = detail
 
 
 class Cancelled(ConvertError):

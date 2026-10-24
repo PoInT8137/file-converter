@@ -77,9 +77,14 @@ def shortcut_paths():
 
 
 def run_powershell(script):
+    """True, если PowerShell отработал. Таймаут и отсутствие PowerShell не должны ронять установку."""
     encoded = base64.b64encode(script.encode("utf-16-le")).decode()
-    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                   creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                           creationflags=CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    except Exception:
+        return False
+    return r.returncode == 0
 
 
 def ps_quote(text):
@@ -98,7 +103,7 @@ def make_shortcuts(target_dir, names):
             f"$s.IconLocation = {ps_quote(str(exe) + ',0')}",
             "$s.Save()",
         ]
-    run_powershell("\n".join(lines))
+    return run_powershell("\n".join(lines)) and all(shortcut_paths()[n].exists() for n in names)
 
 
 def register(target_dir, size_kb):
@@ -352,10 +357,12 @@ class Wizard(ctk.CTk):
             for name in ("desktop", "sendto"):
                 if not {"desktop": desktop, "sendto": sendto}[name] and links[name].exists():
                     links[name].unlink()
-            make_shortcuts(target, ["menu"] + (["desktop"] if desktop else []) + (["sendto"] if sendto else []))
+            links_ok = make_shortcuts(target, ["menu"] + (["desktop"] if desktop else []) + (["sendto"] if sendto else []))
             register(target, total // 1024)
             self.events.put(("progress", 1.0))
-            self.events.put(("done", None))
+            note = "" if links_ok else ("Ярлыки создать не удалось. Программу можно запускать из папки "
+                                        f"{target}.")
+            self.events.put(("done", note))
         except Cancelled:
             self.cleanup_stage(stage, made)
             self.events.put(("cancelled", None))
@@ -366,6 +373,10 @@ class Wizard(ctk.CTk):
         except OSError as e:
             self.cleanup_stage(stage, made)
             self.events.put(("error", f"Не удалось скопировать файлы: {e.strerror or e}"))
+        except Exception as e:
+            # любая другая ошибка тоже должна дойти до окна, иначе оно навсегда останется на прогрессе
+            self.cleanup_stage(stage, made)
+            self.events.put(("error", f"Установка прервана из-за неожиданной ошибки: {e}"))
 
     @staticmethod
     def cleanup_stage(stage, made):
@@ -381,11 +392,13 @@ class Wizard(ctk.CTk):
             self.cancel_flag.set()
             self.file_label.configure(text="Отмена...")
 
-    def page_done(self):
+    def page_done(self, note=""):
         self.clear()
         self.set_step(3)
         self.heading("Установка завершена")
         self.text(f"{APP} установлен. Удалить его можно в Параметрах Windows, раздел «Приложения».")
+        if note:
+            self.text(note, t.ERROR, 12, pady=(8, 0))
         self.var_run = ctk.BooleanVar(value=True)
         box = ctk.CTkFrame(self.body, fg_color=t.MAIN)
         box.pack(anchor="w", pady=(10, 0))
@@ -480,6 +493,8 @@ class Wizard(ctk.CTk):
             self.events.put(("removed", None))
         except OSError as e:
             self.events.put(("error", f"Не удалось удалить файлы: {e.strerror or e}"))
+        except Exception as e:
+            self.events.put(("error", f"Удаление прервано из-за неожиданной ошибки: {e}"))
 
     def page_removed(self):
         self.clear()
@@ -511,7 +526,7 @@ class Wizard(ctk.CTk):
                     self.bar.set(value)
                 elif kind == "done":
                     self.busy = False
-                    self.page_done()
+                    self.page_done(value or "")
                 elif kind == "removed":
                     self.busy = False
                     self.page_removed()

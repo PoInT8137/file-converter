@@ -5,7 +5,7 @@ import customtkinter as ctk
 from ..osutils import human_size
 from ..registry import ext_of
 from . import theme as t
-from .widgets import DashedBox, caption, ghost_button, make_clickable, mono_label, outline_button, walk
+from .widgets import DashedBox, caption, ghost_button, inside, make_clickable, mono_label, outline_button, walk_own
 
 STATUS_TEXT = {"wait": "ЖДЁТ", "done": "ГОТОВО", "error": "ОШИБКА", "cancel": "ОТМЕНА", "new": ""}
 STATUS_COLOR = {"wait": t.MUTED, "done": t.SUCCESS, "error": t.ERROR, "run": t.ACCENT, "cancel": t.MUTED, "new": t.MUTED}
@@ -54,11 +54,10 @@ class QueueRow(ctk.CTkFrame):
                                     command=self.remove_or_cancel)
         self.remove.grid(row=0, column=2, rowspan=2, padx=(4, 8))
         make_clickable(self, None, self.hover_on, self.hover_off)
-        skip = str(self.remove)
-        for w in walk(self):
-            if not str(w).startswith(skip):
+        for w in walk_own(self):
+            if w is not self.remove:
                 try:
-                    w.bind("<Button-1>", self.click, add="+")
+                    w.bind("<ButtonRelease-1>", self.click, add="+")
                 except (ValueError, NotImplementedError):
                     pass
         self.refresh()
@@ -71,7 +70,7 @@ class QueueRow(ctk.CTkFrame):
             self.panel.remove(self.item)
 
     def click(self, event=None):
-        if event is None:
+        if event is None or not inside(self, event):
             return
         ctrl = bool(event and event.state & 0x0004)
         self.panel.click(self.item, ctrl)

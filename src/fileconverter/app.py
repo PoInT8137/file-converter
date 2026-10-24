@@ -1,4 +1,5 @@
 import ctypes
+import ctypes.wintypes
 import gc
 import os
 import queue
@@ -73,8 +74,7 @@ class App(ctk.CTk, DND_BASE):
         t.reset_cache()
         t.load_fonts()
         self.title("File Converter")
-        self.geometry("1180x760")
-        self.minsize(1000, 640)
+        self.fit_to_screen()
         try:
             self.iconbitmap(default=str(assets_dir() / "app.ico"))
         except Exception:
@@ -122,6 +122,28 @@ class App(ctk.CTk, DND_BASE):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.show_section("convert")
         self.after(80, self.poll)
+
+    def fit_to_screen(self):
+        """Стартовый размер 1180x760, но не больше рабочей области экрана.
+
+        CustomTkinter умножает размер на масштаб Windows: при 150% окно 1180x760 занимает 1770x1140
+        и не помещается на экран 1920x1080.
+        """
+        scale = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+        left, top, width, height = 0, 0, self.winfo_screenwidth(), self.winfo_screenheight() - 48
+        try:
+            rect = ctypes.wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rect), 0):
+                left, top, width, height = rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+        except Exception:
+            pass
+        # запас на рамку и заголовок окна
+        w = max(600, min(1180, int(width / scale) - 16))
+        h = max(400, min(760, int((height - 40) / scale)))
+        self.minsize(min(1000, w), min(640, h))
+        x = left + max(0, int((width - w * scale) / 2))
+        y = top + max(0, int((height - 40 - h * scale) / 2))
+        self.geometry(f"{w}x{h}+{x}+{y}")
 
     def report_callback_exception(self, exc, val, tb):
         text = "".join(traceback.format_exception(exc, val, tb))

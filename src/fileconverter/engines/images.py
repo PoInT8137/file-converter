@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageSequence, UnidentifiedImageError
 
 from ..config import assets_dir
 from .base import ConvertError, ensure_output
@@ -18,14 +18,23 @@ PIL_FORMATS = {
 }
 
 
+def open_error(path, e):
+    if Path(path).suffix.lower() in (".heic", ".heif") and not HEIF_OK:
+        return ConvertError("Нет поддержки HEIC: не установлена библиотека pillow-heif")
+    text = str(e).lower()
+    if isinstance(e, UnidentifiedImageError):
+        return ConvertError("Это не картинка или её формат не поддерживается.", detail=str(e))
+    if "truncated" in text:
+        return ConvertError("Картинка повреждена: файл обрезан или скачан не до конца.", detail=str(e))
+    return ConvertError("Не удалось открыть картинку, файл повреждён.", detail=str(e))
+
+
 def open_image(path):
     try:
         img = Image.open(str(path))
         img.load()
     except Exception as e:
-        if Path(path).suffix.lower() in (".heic", ".heif") and not HEIF_OK:
-            raise ConvertError("Нет поддержки HEIC: не установлена библиотека pillow-heif")
-        raise ConvertError(f"Не удалось открыть картинку: {e}")
+        raise open_error(path, e)
     try:
         img = ImageOps.exif_transpose(img)
     except Exception:
@@ -82,11 +91,52 @@ def save_image(img, dst, ctx, keep_exif=None):
     try:
         img.save(str(dst), fmt, **kw)
     except Exception as e:
-        raise ConvertError(f"Не удалось сохранить картинку: {e}")
+        raise ConvertError("Не удалось сохранить картинку в этом формате.", detail=str(e))
+    return ensure_output(dst)
+
+
+def frame_count(path):
+    try:
+        with Image.open(str(path)) as im:
+            return getattr(im, "n_frames", 1)
+    except Exception:
+        return 1
+
+
+def save_animation(src, dst, ctx):
+    """GIF и WEBP с несколькими кадрами сохраняются целиком, с исходной скоростью."""
+    fmt = PIL_FORMATS[Path(dst).suffix.lower().lstrip(".")]
+    try:
+        with Image.open(str(src)) as im:
+            frames, durations = [], []
+            for frame in ImageSequence.Iterator(im):
+                frames.append(frame.convert("RGBA"))
+                durations.append(frame.info.get("duration", im.info.get("duration", 100)) or 100)
+            loop = im.info.get("loop", 0)
+    except Exception as e:
+        raise open_error(src, e)
+    kw = {"save_all": True, "append_images": frames[1:], "duration": durations, "loop": loop}
+    if fmt == "WEBP":
+        kw.update(quality=ctx.jpeg_quality(), method=4)
+    else:
+        kw["disposal"] = 2
+    try:
+        frames[0].save(str(dst), fmt, **kw)
+    except Exception as e:
+        raise ConvertError("Не удалось сохранить анимацию.", detail=str(e))
+    ctx.log(f"Анимация сохранена: кадров {len(frames)}")
     return ensure_output(dst)
 
 
 def convert(engines, src, dst, ctx):
+    frames = frame_count(src)
+    fmt = PIL_FORMATS.get(Path(dst).suffix.lower().lstrip("."))
+    if frames > 1 and fmt in ("GIF", "WEBP"):
+        save_animation(src, dst, ctx)
+        ctx.progress(1.0)
+        return [dst]
+    if frames > 1:
+        ctx.log(f"В файле {frames} кадров анимации, в {fmt} сохранён только первый")
     img = open_image(src)
     ctx.progress(0.4)
     exif = img.info.get("exif")

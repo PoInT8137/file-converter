@@ -109,3 +109,15 @@ def engines():
     from fileconverter.config import Settings
     from fileconverter.engines.finder import Engines
     return Engines(Settings())
+
+
+@pytest.fixture(scope="session")
+def shared_app(tmp_path_factory):
+    # одно окно на все проверки интерфейса, как в настоящей программе: несколько Tk подряд
+    # в одном процессе на Windows иногда не могут прочитать tk.tcl
+    os.environ["FILECONVERTER_DATA"] = str(tmp_path_factory.mktemp("ui_data"))
+    from fileconverter.app import App
+    a = App(selftest=True)
+    a.update()
+    yield a
+    a.on_close()

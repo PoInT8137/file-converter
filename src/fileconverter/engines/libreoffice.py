@@ -119,7 +119,11 @@ def convert(engines, src, dst, ctx):
             code, out = run(cmd, timeout=600)
         produced = list(outdir.glob("input.*"))
         if code != 0 or not produced:
-            raise ConvertError("LibreOffice не смог конвертировать файл. " + last_lines(out))
+            if "could not be loaded" in out:
+                text = "LibreOffice не смог открыть файл: он повреждён, пустой или защищён паролем."
+            else:
+                text = "LibreOffice не смог конвертировать файл. Возможно, он повреждён."
+            raise ConvertError(text, detail=last_lines(out, 6))
         result = ensure_output(produced[0])
         if dst_ext == "csv":
             data = result.read_bytes()

@@ -19,13 +19,34 @@ AUDIO_ARGS = {
 VIDEO_ARGS = {
     "mp4": ["-c:v", "libx264", "-preset", "medium", "-crf", "23", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"],
-    "mkv": ["-c:v", "libx264", "-preset", "medium", "-crf", "23", "-c:a", "aac", "-b:a", "160k"],
+    "mkv": ["-c:v", "libx264", "-preset", "medium", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k"],
     "mov": ["-c:v", "libx264", "-preset", "medium", "-crf", "23", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "160k"],
     "avi": ["-c:v", "mpeg4", "-q:v", "4", "-c:a", "libmp3lame", "-q:a", "3"],
-    "webm": ["-c:v", "libvpx-vp9", "-crf", "33", "-b:v", "0", "-row-mt", "1", "-deadline", "good",
-             "-cpu-used", "4", "-c:a", "libopus", "-b:a", "128k"],
+    # без yuv420p VP9 не принимает картинку с прозрачностью из GIF (формат gbrap) и падает
+    "webm": ["-c:v", "libvpx-vp9", "-crf", "33", "-b:v", "0", "-pix_fmt", "yuv420p", "-row-mt", "1",
+             "-deadline", "good", "-cpu-used", "4", "-c:a", "libopus", "-b:a", "128k"],
 }
+
+# GIF из длинного видео выходит огромным (10 минут дают около 100 МБ), поэтому берётся начало
+GIF_MAX_SECONDS = 60
+
+# типовые ответы FFmpeg и что они значат для пользователя
+FFMPEG_ERRORS = [
+    ("Invalid data found when processing input", "Файл повреждён или это не аудио и не видео."),
+    ("does not contain any stream", "В файле нет подходящей дорожки: например, в видео нет звука."),
+    ("matches no streams", "В файле нет подходящей дорожки: например, в видео нет звука."),
+    ("No space left on device", "На диске не хватает места."),
+    ("Permission denied", "Нет доступа к файлу. Возможно, он открыт в другой программе."),
+    ("No such file or directory", "Файл не найден."),
+]
+
+
+def explain(errors_text):
+    for marker, text in FFMPEG_ERRORS:
+        if marker in errors_text:
+            return text
+    return "FFmpeg не смог обработать файл. Возможно, он повреждён или формат не поддерживается."
 
 
 def tool(engines):
@@ -84,7 +105,8 @@ def execute(engines, args, ctx, duration=0.0, out=None):
 
     code, output = run(cmd, timeout=None, on_line=on_line)
     if code != 0:
-        raise ConvertError("FFmpeg завершился с ошибкой: " + last_lines("\n".join(errors) or output))
+        text = "\n".join(errors) or output
+        raise ConvertError(explain(text), detail=last_lines(text, 6))
     if out:
         ensure_output(out)
     ctx.progress(1.0)
@@ -101,7 +123,13 @@ def convert(engines, src, dst, ctx):
         args = ["-i", str(src)] + VIDEO_ARGS[ext] + [str(dst)]
     elif ext == "gif":
         vf = "fps=12,scale='min(640,iw)':-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=192[p];[b][p]paletteuse=dither=bayer"
-        args = ["-i", str(src), "-vf", vf, "-loop", "0", str(dst)]
+        args = ["-i", str(src), "-vf", vf, "-loop", "0"]
+        if duration > GIF_MAX_SECONDS:
+            ctx.log(f"Видео длиннее {GIF_MAX_SECONDS} секунд: в GIF попадёт только начало, иначе файл будет огромным. "
+                    "Нужный фрагмент можно вырезать в разделе Аудио и видео")
+            args += ["-t", str(GIF_MAX_SECONDS)]
+            duration = GIF_MAX_SECONDS
+        args.append(str(dst))
     else:
         raise ConvertError(f"FFmpeg не умеет сохранять в {ext.upper()}")
     execute(engines, args, ctx, duration, dst)

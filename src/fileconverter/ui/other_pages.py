@@ -54,12 +54,13 @@ class HistoryPage(Page):
         label(b, f"Последние конвертации: {len(items)}", 13, t.MUTED).pack(anchor="w", pady=(2, 14))
         table = ctk.CTkFrame(b, fg_color=t.CARD, corner_radius=t.RADIUS, border_width=1, border_color=t.BORDER)
         table.pack(fill="x")
-        table.grid_columnconfigure(1, weight=1)
-        table.grid_columnconfigure(2, weight=1)
-        for c, text in enumerate(["ВРЕМЯ", "ИСХОДНЫЙ ФАЙЛ", "РЕЗУЛЬТАТ", "СТАТУС"]):
+        # время под исходным файлом, статус под результатом: так таблица помещается и в узком окне
+        table.grid_columnconfigure(0, weight=1, uniform="names")
+        table.grid_columnconfigure(1, weight=1, uniform="names")
+        for c, text in enumerate(["ИСХОДНЫЙ ФАЙЛ", "РЕЗУЛЬТАТ"]):
             caption(table, text, size=10).grid(row=0, column=c, sticky="w", padx=12, pady=(10, 6))
         if not items:
-            mono_label(table, "История пуста", 12).grid(row=1, column=0, columnspan=6, pady=24)
+            mono_label(table, "История пуста", 12).grid(row=1, column=0, columnspan=4, pady=24)
         self.table = table
         self.shown = 0
         self.more = None
@@ -81,27 +82,32 @@ class HistoryPage(Page):
             self.more.pack(anchor="w", pady=(10, 0))
 
     def row(self, table, r, it):
-        mono_label(table, time.strftime("%d.%m %H:%M", time.localtime(it["time"])), 11).grid(
-            row=r, column=0, sticky="w", padx=12, pady=3)
+        top, bottom = 2 * r - 1, 2 * r
         # иконка и имя одной меткой: каждый CTk-виджет дорогой, а строк много
         src = Path(it["source"])
         ctk.CTkLabel(table, text=" " + short(src.name), image=t.get_icon(src.suffix, 20), compound="left",
-                     font=t.font(12), text_color=t.TEXT, anchor="w").grid(row=r, column=1, sticky="w", padx=12)
+                     font=t.font(12), text_color=t.TEXT, anchor="w", justify="left", wraplength=150).grid(
+            row=top, column=0, sticky="w", padx=12, pady=(6, 0))
+        mono_label(table, time.strftime("%d.%m %H:%M", time.localtime(it["time"])), 10).grid(
+            row=bottom, column=0, sticky="w", padx=(38, 12), pady=(0, 6))
         res = Path(it["result"]) if it.get("result") else None
         if res:
             ctk.CTkLabel(table, text=" " + short(res.name), image=t.get_icon(res.suffix, 20), compound="left",
-                         font=t.font(12), text_color=t.TEXT, anchor="w").grid(row=r, column=2, sticky="w", padx=12)
+                         font=t.font(12), text_color=t.TEXT, anchor="w", justify="left", wraplength=150).grid(
+                row=top, column=1, sticky="w", padx=12, pady=(6, 0))
         else:
-            label(table, short(it.get("message", "")), 11, t.MUTED, anchor="w").grid(row=r, column=2, sticky="w", padx=12)
+            label(table, short(it.get("message", ""), 60), 11, t.MUTED, anchor="w", justify="left",
+                  wraplength=150).grid(row=top, column=1, sticky="w", padx=12, pady=(6, 0))
         text, color = STATUS.get(it["status"], (it["status"].upper(), t.MUTED))
-        ctk.CTkLabel(table, text=text, font=t.mono(11, "bold"), text_color=color).grid(row=r, column=3, sticky="w", padx=12)
+        ctk.CTkLabel(table, text=text, font=t.mono(10, "bold"), text_color=color, anchor="w").grid(
+            row=bottom, column=1, sticky="w", padx=(12, 12), pady=(0, 6))
         if res:
             open_btn = outline_button(table, "", lambda: self.open(res), width=t.H,
                                       image=t.ui_icon("external-link", "muted", 16))
-            open_btn.grid(row=r, column=4, padx=(8, 2), pady=2)
+            open_btn.grid(row=top, column=2, rowspan=2, padx=(8, 2), pady=4)
             folder_btn = outline_button(table, "", lambda: show_in_folder(res), width=t.H,
                                         image=t.ui_icon("folder-open", "muted", 16))
-            folder_btn.grid(row=r, column=5, padx=(2, 8), pady=2)
+            folder_btn.grid(row=top, column=3, rowspan=2, padx=(2, 8), pady=4)
             hint(open_btn, "Открыть")
             hint(folder_btn, "Показать в папке")
 
@@ -120,7 +126,7 @@ def hint(widget, text):
     widget.bind("<Enter>", on_event(lambda e: Popover(widget, text, timeout=1500)), add="+")
 
 
-def short(text, n=26):
+def short(text, n=40):
     return text if len(text) <= n else text[: n - 10] + "..." + text[-7:]
 
 

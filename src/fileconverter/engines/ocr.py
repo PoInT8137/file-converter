@@ -38,7 +38,7 @@ def recognize(engines, image, outbase, kind, ctx):
     code, out = run(cmd, timeout=600, env=tess_env(tesseract))
     result = Path(f"{outbase}.{'pdf' if kind == 'pdf' else 'txt'}")
     if code != 0 or not result.exists():
-        raise ConvertError("Tesseract не смог распознать текст: " + last_lines(out))
+        raise ConvertError("Tesseract не смог распознать текст на этой картинке.", detail=last_lines(out, 6))
     return result
 
 

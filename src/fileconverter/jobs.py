@@ -6,6 +6,7 @@ import traceback
 import shutil
 from pathlib import Path
 
+from .config import data_dir
 from .engines.base import Cancelled, Context, ConvertError, set_current
 from .naming import Namer
 from .osutils import open_path, send_to_trash, show_in_folder
@@ -14,6 +15,14 @@ from .registry import ext_of
 WAIT, RUN, DONE, ERROR, CANCEL = "wait", "run", "done", "error", "cancel"
 
 _ids = itertools.count(1)
+
+
+def write_error_log(text):
+    try:
+        with open(data_dir() / "error.log", "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text.rstrip() + "\n\n")
+    except OSError:
+        pass
 
 
 def friendly_error(e):
@@ -27,7 +36,7 @@ def friendly_error(e):
         return "Не хватило памяти для обработки файла."
     if isinstance(e, OSError):
         return f"Ошибка при работе с файлом: {e.strerror or e}"
-    return f"Не удалось выполнить операцию: {e}"
+    return "Не удалось выполнить операцию из-за внутренней ошибки. Подробности в error.log в папке данных."
 
 
 class Job:
@@ -156,6 +165,9 @@ class JobQueue:
             for f in job.files:
                 if not f.exists():
                     raise FileNotFoundError(str(f))
+                if f.stat().st_size == 0:
+                    # иначе LibreOffice, например, молча делает из пустого DOCX чистый PDF
+                    raise ConvertError(f"Файл {f.name} пустой (0 байт), конвертировать нечего.")
             if job.conversion:
                 src = job.files[0]
                 self._log(job, f"Старт: {src.name} в {job.conversion.dst.upper()} ({job.conversion.engine_label})")
@@ -180,9 +192,10 @@ class JobQueue:
             job.error = friendly_error(e)
             self._remove_partial(namer)
             self._log(job, f"Ошибка: {job.error}")
-            if not isinstance(e, ConvertError):
-                detail = traceback.format_exc(limit=3).strip().splitlines()[-1]
-                job.log.append(f"           {detail}")
+            # технический текст движка и трассировка только в error.log, в окне понятное сообщение
+            detail = getattr(e, "detail", "") if isinstance(e, ConvertError) else traceback.format_exc()
+            if detail:
+                write_error_log(f"{job.title}: {job.error}\n{detail}")
             if self.history:
                 try:
                     self.history.add(job.files[0] if job.files else "", "", ERROR, job.error)

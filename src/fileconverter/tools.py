@@ -15,6 +15,7 @@ class Field:
     default: str = ""
     options: list = field(default_factory=list)
     hint: str = ""
+    required: bool = False
 
 
 @dataclass
@@ -74,7 +75,7 @@ def _images_to_pdf(engines, files, ctx, params):
     return pdf.images_to_pdf(engines, files, dst, ctx)
 
 
-PAGES = Field("pages", "Страницы", hint="Например: 1-3, 5, 8-")
+PAGES = Field("pages", "Страницы", hint="Например: 1-3, 5, 8-", required=True)
 LEVEL = Field("level", "Степень сжатия", "choice", "medium",
               [("low", "Слабое"), ("medium", "Среднее"), ("high", "Сильное")])
 ANGLE = Field("angle", "Поворот", "choice", "90",
@@ -95,17 +96,17 @@ TOOLS = [
          pdf.rotate, ["pdf"], fields=[ANGLE, Field("pages", "Страницы", hint="Пусто: все страницы")],
          verb="Повернуть"),
     Tool("pdf_reorder", "Переставить страницы", "Новый порядок страниц", "pdf", "СТРАНИЦЫ", "arrow-up-down",
-         pdf.reorder, ["pdf"], fields=[Field("order", "Новый порядок", hint="Например: 3, 1, 2, 4-")],
+         pdf.reorder, ["pdf"], fields=[Field("order", "Новый порядок", hint="Например: 3, 1, 2, 4-", required=True)],
          verb="Переставить страницы"),
     Tool("pdf_compress", "Сжать", "Уменьшить размер файла", "pdf", "ОПТИМИЗАЦИЯ И ЗАЩИТА", "shrink",
          pdf.compress, ["pdf"], fields=[LEVEL], verb="Сжать"),
     Tool("pdf_encrypt", "Поставить пароль", "Шифрование AES-256", "pdf", "ОПТИМИЗАЦИЯ И ЗАЩИТА", "lock",
-         pdf.encrypt, ["pdf"], fields=[Field("password", "Пароль", "password")], verb="Поставить пароль"),
+         pdf.encrypt, ["pdf"], fields=[Field("password", "Пароль", "password", required=True)], verb="Поставить пароль"),
     Tool("pdf_decrypt", "Снять пароль", "Если пароль известен", "pdf", "ОПТИМИЗАЦИЯ И ЗАЩИТА", "lock-open",
-         pdf.decrypt, ["pdf"], fields=[Field("password", "Текущий пароль", "password")], verb="Снять пароль"),
+         pdf.decrypt, ["pdf"], fields=[Field("password", "Текущий пароль", "password", required=True)], verb="Снять пароль"),
     Tool("pdf_watermark", "Водяной знак", "Текст по диагонали страницы", "pdf", "ОПТИМИЗАЦИЯ И ЗАЩИТА", "stamp",
          pdf.watermark, ["pdf"], verb="Добавить водяной знак",
-         fields=[Field("text", "Текст", default="ЧЕРНОВИК"),
+         fields=[Field("text", "Текст", default="ЧЕРНОВИК", required=True),
                  Field("opacity", "Прозрачность", "choice", "0.25",
                        [("0.15", "Едва заметно"), ("0.25", "Обычно"), ("0.45", "Заметно")])]),
     Tool("pdf_meta", "Метаданные", "Название, автор, тема", "pdf", "СОДЕРЖИМОЕ", "info",
@@ -120,7 +121,7 @@ TOOLS = [
     Tool("img_resize", "Изменить размер", "В процентах или по ширине", "images", "ПРЕОБРАЗОВАНИЕ", "scaling",
          images.resize, IMAGE_EXTS, "pillow", verb="Изменить размер",
          fields=[Field("mode", "Способ", "choice", "percent", [("percent", "В процентах"), ("width", "Ширина в пикселях")]),
-                 Field("value", "Значение", default="50")]),
+                 Field("value", "Значение", default="50", required=True)]),
     Tool("img_crop", "Обрезать", "Срезать поля в пикселях", "images", "ПРЕОБРАЗОВАНИЕ", "crop",
          images.crop, IMAGE_EXTS, "pillow", verb="Обрезать",
          fields=[Field("left", "Слева", default="0"), Field("top", "Сверху", default="0"),
@@ -133,7 +134,7 @@ TOOLS = [
          images.strip_exif, IMAGE_EXTS, "pillow", verb="Удалить EXIF"),
     Tool("img_watermark", "Водяной знак", "Текст в углу картинки", "images", "ОФОРМЛЕНИЕ", "stamp",
          images.watermark, IMAGE_EXTS, "pillow", verb="Добавить водяной знак",
-         fields=[Field("text", "Текст", default="")]),
+         fields=[Field("text", "Текст", required=True)]),
     Tool("img_to_pdf", "Собрать в PDF", "Несколько картинок в один PDF", "images", "ОФОРМЛЕНИЕ", "file-text",
          _images_to_pdf, IMAGE_EXTS, "pymupdf", verb="Собрать PDF"),
 

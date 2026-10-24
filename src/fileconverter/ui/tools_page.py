@@ -5,15 +5,16 @@ from ..tools import SECTION_TITLES, section_tools
 from . import theme as t
 from .convert_page import LogView
 from .widgets import (Flow, Popover, ResponsiveGrid, accent_button, caption, holder, label, make_clickable,
-                      mono_label, outline_button)
+                      mono_label, on_event, outline_button)
 
 SECTION_ICONS = {"pdf": "file-text", "images": "image", "media": "clapperboard", "ocr": "scan-text"}
 
 
-class ToolsPage(ctk.CTkScrollableFrame):
+class ToolsPage(ctk.CTkFrame):
+    """Раздел инструментов: карточки прокручиваются, панель действия всегда видна внизу."""
+
     def __init__(self, parent, app, section):
-        super().__init__(parent, fg_color=t.MAIN, corner_radius=0, scrollbar_button_color=t.BORDER,
-                         scrollbar_button_hover_color=t.BORDER_BTN)
+        super().__init__(parent, fg_color=t.MAIN, corner_radius=0)
         self.app = app
         self.section = section
         self.tools = section_tools(section)
@@ -21,7 +22,14 @@ class ToolsPage(ctk.CTkScrollableFrame):
         self.cards = {}
         self.log = None
 
-        b = ctk.CTkFrame(self, fg_color=t.MAIN)
+        self.action = ctk.CTkFrame(self, fg_color=t.BAR, corner_radius=0)
+        self.action.pack(side="bottom", fill="x")
+        ctk.CTkFrame(self, fg_color=t.BORDER, height=1, width=1, corner_radius=0).pack(side="bottom", fill="x")
+        self.scroll = ctk.CTkScrollableFrame(self, fg_color=t.MAIN, corner_radius=0, scrollbar_button_color=t.BORDER,
+                                             scrollbar_button_hover_color=t.BORDER_BTN)
+        self.scroll.pack(side="top", fill="both", expand=True)
+
+        b = ctk.CTkFrame(self.scroll, fg_color=t.MAIN)
         b.pack(fill="both", expand=True, padx=28, pady=22)
         label(b, SECTION_TITLES[section], 22, weight="bold").pack(anchor="w")
         label(b, "Работают с файлами, выбранными в очереди. Ctrl + клик выбирает несколько файлов.",
@@ -47,14 +55,14 @@ class ToolsPage(ctk.CTkScrollableFrame):
                 if tool.group == g:
                     grid.add(self.tool_card(grid, tool))
 
-        self.action = ctk.CTkFrame(b, fg_color=t.BAR, corner_radius=t.RADIUS, border_width=1, border_color=t.BORDER)
-        self.action.pack(fill="x", pady=(18, 0))
-        self.action_text = label(self.action, "", 14, weight="bold")
-        self.action_text.pack(side="left", padx=16, pady=14)
-        self.action_hint = mono_label(self.action, "", 11)
-        self.action_hint.pack(side="left", padx=(0, 10))
         self.run_btn = accent_button(self.action, "Выполнить", self.run, width=150)
-        self.run_btn.pack(side="right", padx=10, pady=8)
+        self.run_btn.pack(side="right", padx=(10, 28), pady=10)
+        text_box = ctk.CTkFrame(self.action, fg_color=t.BAR, corner_radius=0)
+        text_box.pack(side="left", fill="x", expand=True, padx=(28, 0), pady=8)
+        self.action_text = label(text_box, "", 14, weight="bold", anchor="w", justify="left")
+        self.action_text.pack(anchor="w")
+        self.action_hint = mono_label(text_box, "", 11, anchor="w")
+        self.action_hint.pack(anchor="w")
         self.log_holder = holder(b, t.MAIN)
         self.log_holder.pack(fill="x", pady=(14, 0))
         self.refresh()
@@ -70,11 +78,22 @@ class ToolsPage(ctk.CTkScrollableFrame):
         box.grid_propagate(False)
         icon = ctk.CTkLabel(box, text="", image=t.ui_icon(tool.icon, "muted", 20))
         icon.place(relx=0.5, rely=0.5, anchor="center")
-        title = label(card, tool.title, 13, t.TEXT if ok else t.MUTED, "bold", anchor="w")
+        title = label(card, tool.title, 13, t.TEXT if ok else t.MUTED, "bold", anchor="w", justify="left",
+                      wraplength=180)
         title.grid(row=0, column=1, sticky="sw", pady=(12, 0), padx=(0, 8))
         desc = tool.desc if ok else f"Нужен {ENGINE_TITLES.get(tool.engine, tool.engine)}"
-        label(card, desc, 11, t.MUTED, anchor="w", wraplength=180, justify="left").grid(
-            row=1, column=1, sticky="nw", pady=(0, 12), padx=(0, 8))
+        desc_label = label(card, desc, 11, t.MUTED, anchor="w", wraplength=180, justify="left")
+        desc_label.grid(row=1, column=1, sticky="nw", pady=(0, 12), padx=(0, 8))
+
+        def rewrap(event):
+            # перенос по ширине карточки, иначе в узком окне текст обрезается справа
+            scale = ctk.ScalingTracker.get_widget_scaling(card)
+            width = max(80, int(event.width / scale) - 84)
+            for lbl in (title, desc_label):
+                if lbl.cget("wraplength") != width:
+                    lbl.configure(wraplength=width)
+
+        card.bind("<Configure>", on_event(rewrap), add="+")
         card.icon = icon
         card.box = box
         self.cards[tool.id] = card

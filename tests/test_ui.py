@@ -19,19 +19,6 @@ def wait_job(app, item, timeout=60):
     pump(app, 0.2)
 
 
-@pytest.fixture(scope="module")
-def shared_app(tmp_path_factory):
-    # одно окно на все проверки, как в настоящей программе: несколько Tk подряд в одном процессе
-    # на Windows иногда не могут прочитать tk.tcl
-    import os
-    os.environ["FILECONVERTER_DATA"] = str(tmp_path_factory.mktemp("ui_data"))
-    from fileconverter.app import App
-    a = App(selftest=True)
-    pump(a)
-    yield a
-    a.on_close()
-
-
 @pytest.fixture
 def app(shared_app):
     from fileconverter.config import DEFAULTS
