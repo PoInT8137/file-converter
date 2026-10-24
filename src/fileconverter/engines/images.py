@@ -129,7 +129,8 @@ def save_animation(src, dst, ctx):
 
 
 def convert(engines, src, dst, ctx):
-    frames = frame_count(src)
+    # многостраничный TIFF тоже даёт несколько кадров, но это не анимация
+    frames = frame_count(src) if Path(src).suffix.lower() in (".gif", ".webp", ".png") else 1
     fmt = PIL_FORMATS.get(Path(dst).suffix.lower().lstrip("."))
     if frames > 1 and fmt in ("GIF", "WEBP"):
         save_animation(src, dst, ctx)

@@ -86,6 +86,20 @@ def test_tile_click_opens_picker_once(app, where):
     assert calls == [tile.pair]
 
 
+def test_pin_click_pins_without_opening_picker(app):
+    calls = count_picks(app)
+    page = app.pages["convert"]
+    tile = page.tiles[3]
+    real_click(tile._canvas, release_at=(0, 0))  # наведение показывает булавку, клик мимо не считается
+    pin = [w for w in tile.winfo_children() if isinstance(w, ctk.CTkButton)][0]
+    pump(app, 0.1)
+    real_click(part(pin, "_canvas"))
+    pump(app, 0.3)
+    assert app.stats.is_pinned(*tile.pair)
+    assert page.tiles[0].pair == tile.pair
+    assert calls == []
+
+
 def test_release_outside_tile_is_not_a_click(app):
     calls = count_picks(app)
     tile = app.pages["convert"].tiles[0]

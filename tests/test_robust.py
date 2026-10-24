@@ -106,18 +106,31 @@ def test_long_video_gif_is_limited(engines, tmp_path):
 
 
 def test_installer_unexpected_error_reaches_window(tmp_path, monkeypatch):
+    import zipfile
     sys.path.insert(0, str(ROOT / "installer"))
     import setup_app
 
-    payload = ROOT / "build" / "payload" / "payload.zip"
-    if not payload.exists():
-        pytest.skip("нет build/payload/payload.zip, сначала build.bat")
-    monkeypatch.setattr(setup_app, "base_dir", lambda: payload.parent)
+    # маленький архив вместо настоящей программы и ярлыки во временной папке:
+    # тест не должен трогать ярлыки и реестр пользователя
+    payload_dir = tmp_path / "payload"
+    payload_dir.mkdir()
+    with zipfile.ZipFile(payload_dir / "payload.zip", "w") as z:
+        z.writestr("FileConverter.exe", b"MZ")
+        z.writestr("engines/readme.txt", "x")
+    links_dir = tmp_path / "links"
+    links_dir.mkdir()
+    links = {k: links_dir / f"{k}.lnk" for k in ("menu", "desktop", "sendto")}
+    monkeypatch.setattr(setup_app, "base_dir", lambda: payload_dir)
+    monkeypatch.setattr(setup_app, "shortcut_paths", lambda: links)
 
     def broken_shortcuts(*a):
         raise RuntimeError("PowerShell сломан")
 
+    def no_register(*a):
+        raise AssertionError("до записи в реестр дойти не должно")
+
     monkeypatch.setattr(setup_app, "make_shortcuts", broken_shortcuts)
+    monkeypatch.setattr(setup_app, "register", no_register)
     w = setup_app.Wizard("install")
     w.withdraw()
     target = tmp_path / "File Converter"
@@ -128,7 +141,6 @@ def test_installer_unexpected_error_reaches_window(tmp_path, monkeypatch):
             kinds.append(w.events.get_nowait())
         assert kinds[-1][0] == "error"
         assert "неожиданной ошибки" in kinds[-1][1]
-        assert setup_app.registered_dir() != target
     finally:
         w.destroy()
 

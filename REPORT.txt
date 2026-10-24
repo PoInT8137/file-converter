@@ -13,7 +13,7 @@ FILE CONVERTER 1.0.0 - ОТЧЁТ
 - Галочка «Удалять исходный файл» работает только для конвертаций: инструменты вроде объединения PDF исходники не трогают. Файлы уходят в корзину.
 - build.bat, run.bat, tools\get_engines.py, tools\prepare_assets.py.
 
-Проверено вживую (pytest, 102 теста проходят, 1 пропущен)
+Проверено вживую (pytest, 104 теста проходят, 1 пропущен)
 - PDF в DOCX, TXT, HTML, PNG, JPG, PPTX, XLSX.
 - DOCX в PDF, ODT, RTF, TXT, HTML, MD, PNG (через PDF).
 - PPTX в PDF и в PNG по слайдам, XLSX в PDF, CSV, ODS, HTML.
